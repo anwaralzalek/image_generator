@@ -31,7 +31,76 @@ generation still works — the raw prompt is used instead.
 | Disk | ~8 GB for the checkpoint and the VAE |
 | Ollama | optional but recommended — the tool falls back without it |
 
+There are two ways to run this: **[Docker](#run-with-docker)** (one command, brings its
+own Ollama) or a **[local install](#install)**. Both use the same code and the same
+`config/settings.yaml`.
+
+## Run with Docker
+
+Needs an NVIDIA driver plus the NVIDIA Container Toolkit. On Windows, Docker Desktop
+with the WSL2 backend already includes it; on Linux, install
+`nvidia-container-toolkit` and restart the daemon.
+
+```bash
+cp .env.example .env          # optional: warmup, host port, overrides
+
+# 1. Fetch the weights once (into ./models on the host, never into the image)
+docker compose run --rm --no-deps animegen python scripts/download_models.py --url "<direct-download-url>"
+
+# 2. Bring up the stack: Ollama + llama3.2:3b pull + the UI on http://localhost:7860
+docker compose up
+```
+
+The first build takes several minutes and produces an **~8.9 GB image** — the CUDA torch
+stack is nearly all of it. Rebuilds after a code change take seconds, because
+dependencies sit in a layer above the source. Budget another ~2 GB for the `ollama`
+image and ~2 GB for `llama3.2:3b` on the first `up`; both are cached in volumes
+afterwards.
+
+`docker compose up` starts three services:
+
+| Service | Role | GPU |
+|---|---|---|
+| `ollama` | prompt-enhancement LLM | **no** — an LLM holding VRAM is what OOMs SDXL |
+| `ollama-init` | one-shot `ollama pull llama3.2:3b`, then exits | no |
+| `animegen` | the UI and the SDXL pipeline | yes, all devices |
+
+The CLI works the same way:
+
+```bash
+docker compose run --rm animegen generate "American teenagers having fun at a party" --seed 1234
+docker compose run --rm animegen info
+docker compose run --rm --no-deps animegen pytest -q   # the suite, inside the image
+```
+
+Images land in `./outputs` on the host — the container writes through a bind mount, so
+sidecars and PNGs show up exactly as they do in a local install.
+
+**What is a volume and why:** `./models` (weights are 6.5 GB and licence-gated — an
+image nobody can rebuild is not a deliverable), `./outputs` (your results outlive the
+container), and a named `hf-cache` volume so the VAE is downloaded once, not on every
+`docker compose up`.
+
+`--no-deps` skips starting Ollama for jobs that do not need it (downloads, tests); drop
+it for `generate`, which does.
+
+To use an Ollama already running on your host instead of the bundled one, set
+`ANIMEGEN_OLLAMA__HOST=http://host.docker.internal:11434` and add
+`extra_hosts: ["host.docker.internal:host-gateway"]` to the `animegen` service.
+
+Verify the GPU actually reached the container:
+
+```bash
+docker compose run --rm --no-deps animegen python -c "import torch; print(torch.cuda.is_available())"
+# True
+```
+
+`False` means the container toolkit is not wired up — the app will still run, on the CPU,
+very slowly.
+
 ## Install
+
+Skip this if you are using [Docker](#run-with-docker).
 
 ```bash
 git clone <your-fork-url> anime-party-generator
@@ -179,19 +248,29 @@ load from a cold cache.
 | `torch.cuda.is_available()` is False | CPU-only torch wheel | reinstall with `--index-url https://download.pytorch.org/whl/cu121` |
 | Downloaded checkpoint is a few KB | login/HTML page instead of the file | use `--token`, or download manually in a browser |
 | Images look flat 2D | style suffix lost | it is applied by the orchestrator, not the LLM — check `style.suffix` in `settings.yaml` |
+| Docker: `could not select device driver "nvidia"` | NVIDIA Container Toolkit missing | install it and restart the daemon; Docker Desktop + WSL2 has it already |
+| Docker: `cuda.is_available()` is False in the container | container started without GPU access | use `docker compose up` (it reserves the device) or `docker run --gpus all` |
+| Docker: checkpoint not found in the container | `./models` empty on the host | weights are a bind mount, not an image layer — run the download step first |
+| Docker: UI unreachable on localhost | port not published or in use | check `HOST_PORT` in `.env`; the container side is always 7860 |
 
 ## Tests
 
 ```bash
-pytest -q     # no GPU, no Ollama, no downloads required
+pytest -q                                              # locally
+docker compose run --rm --no-deps animegen pytest -q   # inside the image
 ```
 
 `torch`, `diffusers` and the Ollama HTTP calls are mocked; the gradio test skips when
-gradio is not installed.
+gradio is not installed. The suite also asserts the container contract — that the LLM
+service is never given a GPU, and that weights stay a mount rather than a layer.
 
 ## Project layout
 
 ```
+Dockerfile                  multi-stage CUDA-capable image
+docker-compose.yml          animegen (GPU) + ollama (CPU) + one-shot model pull
+docker/entrypoint.sh        dispatches CLI subcommands vs arbitrary commands
+.env.example                compose overrides: warmup, host port, Ollama host
 config/settings.yaml        all tunables
 scripts/download_models.py  one-time weight download
 src/animegen/

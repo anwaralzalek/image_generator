@@ -1,6 +1,7 @@
 # Python
 __pycache__/
 *.py[cod]
+*.egg-info
 *.egg-info/
 build/
 dist/
@@ -31,6 +32,10 @@ models/*
 # Generated images + metadata sidecars
 outputs/*
 !outputs/.gitkeep
+
+# Gradio runtime state
+.gradio/
+flagged/
 
 # Hugging Face / torch caches, if ever placed in-tree
 .cache/

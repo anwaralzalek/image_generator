@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,20 @@ from tests.test_orchestrator import (
     FakeEnhancer,
     FakeGenerator,
 )
+
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def plain(text: str) -> str:
+    """Strip ANSI styling from CLI output.
+
+    Rich renders help and error text with colour escapes *inside* option names
+    ("--images" becomes "--" + escape + "images"), so asserting on raw output
+    passes or fails depending on whether the environment enables colour
+    (TERM, NO_COLOR, FORCE_COLOR, whether stdout is a tty). Normalising first
+    makes these assertions depend on the text and nothing else.
+    """
+    return _ANSI.sub("", text)
 
 
 @pytest.fixture
@@ -70,7 +85,7 @@ def test_cli_help_lists_the_generate_command(runner: CliRunner) -> None:
     result = runner.invoke(app, ["--help"])
 
     assert result.exit_code == 0
-    assert "generate" in result.stdout
+    assert "generate" in plain(result.stdout)
 
 
 def test_cli_generate_help_lists_every_documented_flag(runner: CliRunner) -> None:
@@ -78,14 +93,14 @@ def test_cli_generate_help_lists_every_documented_flag(runner: CliRunner) -> Non
 
     assert result.exit_code == 0
     for flag in ("--images", "--seed", "--size", "--steps", "--no-llm", "--warmup"):
-        assert flag in result.stdout
+        assert flag in plain(result.stdout)
 
 
 def test_cli_version(runner: CliRunner) -> None:
     result = runner.invoke(app, ["--version"])
 
     assert result.exit_code == 0
-    assert "animegen" in result.stdout
+    assert "animegen" in plain(result.stdout)
 
 
 def test_cli_generate_renders_and_reports(
@@ -97,9 +112,9 @@ def test_cli_generate_renders_and_reports(
     generator: FakeGenerator = cli_orchestrator["generator"]
     assert generator.calls[0]["images"] == 2
     assert generator.calls[0]["seed"] == 1234
-    assert "seed 1234" in result.stdout
-    assert "seed 1235" in result.stdout
-    assert LLM_OUTPUT in result.stdout
+    assert "seed 1234" in plain(result.stdout)
+    assert "seed 1235" in plain(result.stdout)
+    assert LLM_OUTPUT in plain(result.stdout)
 
 
 def test_cli_no_llm_flag_bypasses_ollama(
@@ -112,7 +127,7 @@ def test_cli_no_llm_flag_bypasses_ollama(
     generator: FakeGenerator = cli_orchestrator["generator"]
     assert enhancer.calls == []
     assert generator.calls[0]["prompt"] == USER_PROMPT + STYLE_SUFFIX
-    assert "skipped (--no-llm)" in result.stdout
+    assert "skipped (--no-llm)" in plain(result.stdout)
 
 
 def test_cli_warmup_flag_runs_a_throwaway_generation(
@@ -122,7 +137,7 @@ def test_cli_warmup_flag_runs_a_throwaway_generation(
 
     assert result.exit_code == 0, result.stdout
     cli_orchestrator["generator"].warmup.assert_called_once_with()
-    assert "Warming up" in result.stdout
+    assert "Warming up" in plain(result.stdout)
 
 
 def test_cli_size_flag_is_parsed(
@@ -143,7 +158,7 @@ def test_cli_rejects_a_malformed_size(
     result = runner.invoke(app, ["generate", USER_PROMPT, "--size", "big"])
 
     assert result.exit_code != 0
-    assert "WIDTHxHEIGHT" in (result.stdout + (result.stderr or ""))
+    assert "WIDTHxHEIGHT" in plain(result.stdout + (result.stderr or ""))
 
 
 def test_cli_writes_images_where_settings_point(
@@ -168,8 +183,8 @@ def test_cli_info_reports_configuration(
     result = runner.invoke(app, ["info"])
 
     assert result.exit_code == 0, result.stdout
-    assert "MISSING" in result.stdout  # no checkpoint in the temp models dir
-    assert "DOWN" in result.stdout
+    assert "MISSING" in plain(result.stdout)  # no checkpoint in the temp models dir
+    assert "DOWN" in plain(result.stdout)
 
 
 @pytest.mark.parametrize(

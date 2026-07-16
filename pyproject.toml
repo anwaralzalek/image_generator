@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "anime-party-generator"
+version = "0.1.0"
+description = "Local 2.5D anime image generator: Ollama prompt enhancement + DreamShaper XL v2 Turbo, tuned for 8 GB VRAM"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+    "torch>=2.1",
+    "diffusers>=0.27",
+    "transformers>=4.38",
+    "accelerate>=0.27",
+    "safetensors>=0.4",
+    "huggingface-hub>=0.23",
+    "pydantic-settings>=2.2",
+    "pyyaml>=6.0",
+    "requests>=2.31",
+    "typer>=0.12",
+    "gradio>=4.30",
+    "pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+animegen = ["py.typed"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

@@ -1,0 +1,37 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
+env/
+.env
+
+# Editor / tooling local state
+.vscode/
+.idea/
+.claude/
+
+# Model weights (downloaded via scripts/download_models.py)
+models/*
+!models/.gitkeep
+*.safetensors
+*.ckpt
+*.bin
+*.pt
+*.pth
+
+# Generated images + metadata sidecars
+outputs/*
+!outputs/.gitkeep
+
+# Hugging Face / torch caches, if ever placed in-tree
+.cache/
+hf_cache/

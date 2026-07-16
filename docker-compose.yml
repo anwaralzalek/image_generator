@@ -1,0 +1,76 @@
+# Anime Party Generator — full stack: prompt LLM (CPU) + SDXL (GPU).
+#
+#   docker compose up                    # pulls llama3.2:3b, serves the UI on :7860
+#   docker compose run --rm animegen generate "American teenagers having fun at a party"
+#   docker compose run --rm animegen python scripts/download_models.py --url "<url>"
+#
+# Requires: NVIDIA driver on the host + NVIDIA Container Toolkit (Docker Desktop
+# with the WSL2 backend already ships it on Windows).
+
+name: anime-party-generator
+
+services:
+  # The prompt enhancer. Deliberately given no GPU reservation: on an 8 GB card
+  # the LLM must never compete with SDXL for VRAM. The app also sends
+  # num_gpu: 0 with every request, so this is belt and braces.
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama-models:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  # One-shot: pull llama3.2:3b into the ollama volume, then exit. Idempotent —
+  # an already-present model returns immediately, so the demo never downloads live.
+  ollama-init:
+    image: ollama/ollama:latest
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["ollama", "pull", "llama3.2:3b"]
+    restart: "no"
+
+  animegen:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: animegen:latest
+    depends_on:
+      ollama-init:
+        condition: service_completed_successfully
+    environment:
+      # Point the app at the bundled LLM. Override to use a host Ollama:
+      #   ANIMEGEN_OLLAMA__HOST=http://host.docker.internal:11434
+      ANIMEGEN_OLLAMA__HOST: http://ollama:11434
+      ANIMEGEN_PATHS__MODELS_DIR: /models
+      ANIMEGEN_PATHS__OUTPUTS_DIR: /outputs
+      # 1 = warm the pipeline at startup so the first demo image is not the slow one.
+      ANIMEGEN_UI_WARMUP: ${ANIMEGEN_UI_WARMUP:-0}
+      HF_HOME: /hf-cache
+    volumes:
+      # Checkpoints live on the host: a 6.5 GB layer would make the image
+      # unbuildable for anyone without the licence-gated file.
+      - ./models:/models
+      - ./outputs:/outputs
+      - hf-cache:/hf-cache
+    ports:
+      - "${HOST_PORT:-7860}:7860"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  ollama-models:
+  hf-cache:

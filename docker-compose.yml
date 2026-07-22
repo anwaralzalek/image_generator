@@ -1,4 +1,4 @@
-# Anime Party Generator — prompt LLM (CPU) + selectable image model (GPU).
+# Image Generator — prompt LLM (CPU) + selectable image model (GPU).
 #
 #   docker compose up                    # pulls llama3.2:3b, serves the UI on :7860
 #   docker compose run --rm animegen generate "American teenagers having fun at a party"
@@ -6,7 +6,7 @@
 # Requires: NVIDIA driver on the host + NVIDIA Container Toolkit (Docker Desktop
 # with the WSL2 backend already ships it on Windows).
 
-name: anime-party-generator
+name: image-generator
 
 services:
   # The prompt enhancer. Deliberately given no GPU reservation: on an 8 GB card

@@ -75,8 +75,13 @@ def test_prompt_constants_are_stable() -> None:
         "bad anatomy, deformed hands, extra fingers, extra limbs, mutated, lowres, "
         "blurry, watermark, text, jpeg artifacts, flat 2D shading"
     )
-    assert "Stable Diffusion prompt engineer" in SYSTEM_PROMPT
-    assert "Output ONLY the prompt" in SYSTEM_PROMPT
+    assert "Stable Diffusion prompt engineer specializing in Semi-3D Anime" in (
+        SYSTEM_PROMPT
+    )
+    assert "Always include the exact phrase 'semi-3D anime style'" in SYSTEM_PROMPT
+    assert "cel-shaded color blended with soft 3D forms and materials" in SYSTEM_PROMPT
+    assert "never omit or replace the required style" in SYSTEM_PROMPT
+    assert "Output ONLY the final prompt" in SYSTEM_PROMPT
 
 
 def test_environment_overrides_supported_runtime_values(

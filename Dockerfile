@@ -1,16 +1,14 @@
 #
-# Anime Party Generator — CUDA-capable image for an 8 GB card.
+# Image Generator — CUDA-capable image for an 8 GB card.
 #
 # The container is already an isolated environment, so dependencies are
-# installed into the image's system Python rather than a nested virtualenv.
-# CUDA-enabled torch wheels provide the CUDA runtime libraries; NVIDIA
+# installed into the image's Python environment rather than a nested virtualenv.
+# The pinned PyTorch runtime image provides Torch, CUDA, and cuDNN; NVIDIA
 # Container Toolkit injects the host driver when the container starts.
 #
 # Model weights are not baked in; the Compose hf-cache volume stores them.
 
-FROM python:3.10-slim-bookworm
-
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu126
+FROM pytorch/pytorch:2.13.0-cuda12.6-cudnn9-runtime
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -27,7 +25,6 @@ WORKDIR /app
 COPY pyproject.toml README.md ./
 COPY src ./src
 RUN pip install --upgrade pip \
-    && pip install torch==2.13.0 --index-url "${TORCH_INDEX_URL}" \
     && pip install ".[ui]"
 
 RUN mkdir -p /outputs /hf-cache \

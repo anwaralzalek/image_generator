@@ -185,9 +185,9 @@ class DemoApp:
             except (ValueError, RuntimeError, OSError) as exc:
                 raise gr.Error(str(exc)) from exc
 
-        with gr.Blocks(title="Anime Party Generator") as demo:
+        with gr.Blocks(title="Image Generator") as demo:
             gr.Markdown(
-                "# Anime Party Generator\n"
+                "# Image Generator\n"
                 "Choose an image-quality tier with INT8 linear weights; "
                 "llama3.2 optionally expands "
                 "your idea on the CPU. Model use is subject to the "

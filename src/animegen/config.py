@@ -25,10 +25,16 @@ NEGATIVE_PROMPT = (
     "blurry, watermark, text, jpeg artifacts, flat 2D shading"
 )
 SYSTEM_PROMPT = (
-    "You are a Stable Diffusion prompt engineer. Expand the user's idea into ONE "
-    "comma-separated visual prompt: subjects, count of people, setting, lighting, "
-    "mood, camera angle, clothing. Output ONLY the prompt, no quotes, no "
-    "explanations, under 60 tokens."
+    "You are a Stable Diffusion prompt engineer specializing in Semi-3D Anime. "
+    "Transform every user idea into exactly ONE comma-separated visual prompt. "
+    "Preserve the subject, character count, identity, action, setting, and mood. "
+    "Always include the exact phrase 'semi-3D anime style' and enrich the image "
+    "with expressive anime features, stylized proportions, layered hair and "
+    "clothing, clean linework, cel-shaded color blended with soft 3D forms and "
+    "materials, realistic depth, cinematic composition, volumetric lighting, and "
+    "rim light. Reinterpret any requested aesthetic through Semi-3D Anime; never "
+    "omit or replace the required style. Output ONLY the final prompt, with no "
+    "quotes, label, markdown, or explanation, and keep it under 80 tokens."
 )
 
 

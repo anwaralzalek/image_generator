@@ -106,12 +106,16 @@ def test_ui_settings_are_wired_through_compose(compose: dict[str, Any]) -> None:
     assert service["ports"] == ["127.0.0.1:${HOST_PORT:-7860}:7860"]
 
 
-def test_dockerfile_installs_exact_cuda_torch_and_runtime_extras(
+def test_dockerfile_uses_exact_pytorch_cuda_runtime_and_installs_app(
     dockerfile: str,
 ) -> None:
-    assert "https://download.pytorch.org/whl/cu126" in dockerfile
+    assert dockerfile.count(
+        "FROM pytorch/pytorch:2.13.0-cuda12.6-cudnn9-runtime"
+    ) == 1
+    assert "FROM python:" not in dockerfile
+    assert "TORCH_INDEX_URL" not in dockerfile
+    assert "pip install torch" not in dockerfile
     assert "pip install --upgrade pip" in dockerfile
-    assert 'pip install torch==2.13.0 --index-url "${TORCH_INDEX_URL}"' in dockerfile
     assert 'pip install ".[ui]"' in dockerfile
     assert "COPY pyproject.toml README.md ./" in dockerfile
     assert "--mount=type=cache" not in dockerfile
@@ -120,7 +124,7 @@ def test_dockerfile_installs_exact_cuda_torch_and_runtime_extras(
     assert "COPY config" not in dockerfile
 
 
-def test_dockerfile_uses_system_python_as_a_nonroot_user(dockerfile: str) -> None:
+def test_dockerfile_uses_base_python_as_a_nonroot_user(dockerfile: str) -> None:
     for fragment in ("VIRTUAL_ENV", "python -m venv", "/opt/venv"):
         assert fragment not in dockerfile
 

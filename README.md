@@ -1,4 +1,4 @@
-# Anime Party Generator
+# Image Generator
 
 Generate anime-style images locally from a web UI or CLI. Choose a quality
 tier, optionally let `llama3.2:3b` improve the prompt, and get a PNG plus a JSON

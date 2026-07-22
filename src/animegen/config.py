@@ -158,7 +158,7 @@ class OllamaSettings(BaseModel):
 
     host: str = "http://localhost:11434"
     model: str = "llama3.2:3b"
-    timeout: float = 5.0
+    timeout: float = 30.0
     temperature: float = 0.7
     num_gpu: int = 0
     system_prompt: str = DEFAULT_SYSTEM_PROMPT

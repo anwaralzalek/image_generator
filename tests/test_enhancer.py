@@ -94,7 +94,7 @@ def test_request_matches_the_ollama_contract(settings: Settings) -> None:
     payload = call["json"]
 
     assert call["url"] == "http://localhost:11434/api/generate"
-    assert call["timeout"] == pytest.approx(5.0)
+    assert call["timeout"] == pytest.approx(30.0)
     assert payload["model"] == "llama3.2:3b"
     assert payload["prompt"] == USER_PROMPT
     assert payload["stream"] is False

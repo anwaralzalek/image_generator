@@ -61,7 +61,7 @@ def test_defaults_match_the_documented_contract(clean_env: None) -> None:
 
     assert settings.ollama.model == "llama3.2:3b"
     assert settings.ollama.host == "http://localhost:11434"
-    assert settings.ollama.timeout == pytest.approx(5.0)
+    assert settings.ollama.timeout == pytest.approx(30.0)
     assert settings.ollama.num_gpu == 0, "the LLM must stay off the GPU"
     assert "Stable Diffusion XL prompt engineer" in settings.ollama.system_prompt
 

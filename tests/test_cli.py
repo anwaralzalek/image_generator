@@ -10,7 +10,7 @@ import pytest
 from typer.testing import CliRunner
 
 from animegen.cli import app, parse_size
-from animegen.config import DEFAULT_CONFIG_FILE, Settings, load_settings
+from animegen.config import Settings
 from animegen.core.orchestrator import Orchestrator
 from tests.test_orchestrator import (
     LLM_OUTPUT,
@@ -37,10 +37,8 @@ def plain(text: str) -> str:
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
-    return load_settings(
-        DEFAULT_CONFIG_FILE,
-        paths={"models_dir": tmp_path / "models", "outputs_dir": tmp_path / "outputs"},
-    )
+    return Settings(outputs_dir=tmp_path / "outputs")
+
 
 @pytest.fixture
 def runner() -> CliRunner:
@@ -57,7 +55,7 @@ def cli_orchestrator(
     captured: dict[str, Any] = {}
 
     def factory(settings: Settings | None = None, **_: Any) -> Orchestrator:
-        active = settings or load_settings(DEFAULT_CONFIG_FILE)
+        active = settings or Settings()
         generator = FakeGenerator(active)
         enhancer = FakeEnhancer()
         orchestrator = Orchestrator(
@@ -78,7 +76,6 @@ def cli_orchestrator(
 def cli_env(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     """Point the CLI's settings at a temporary outputs directory."""
     monkeypatch.setenv("ANIMEGEN_PATHS__OUTPUTS_DIR", str(tmp_path / "outputs"))
-    monkeypatch.setenv("ANIMEGEN_PATHS__MODELS_DIR", str(tmp_path / "models"))
 
 
 def test_cli_help_lists_the_generate_command(runner: CliRunner) -> None:
@@ -99,7 +96,6 @@ def test_cli_generate_help_lists_every_documented_flag(runner: CliRunner) -> Non
         "--steps",
         "--model",
         "--no-llm",
-        "--warmup",
     ):
         assert flag in plain(result.stdout)
 
@@ -136,16 +132,6 @@ def test_cli_no_llm_flag_bypasses_ollama(
     assert enhancer.calls == []
     assert generator.calls[0]["prompt"] == USER_PROMPT + STYLE_SUFFIX
     assert "skipped (--no-llm)" in plain(result.stdout)
-
-
-def test_cli_warmup_flag_runs_a_throwaway_generation(
-    runner: CliRunner, cli_orchestrator: dict[str, Any], cli_env: None
-) -> None:
-    result = runner.invoke(app, ["generate", USER_PROMPT, "--warmup", "--seed", "1"])
-
-    assert result.exit_code == 0, result.stdout
-    cli_orchestrator["generator"].warmup.assert_called_once_with(model="balanced")
-    assert "Warming up" in plain(result.stdout)
 
 
 def test_cli_model_flag_selects_the_requested_profile(
@@ -206,6 +192,24 @@ def test_cli_writes_images_where_settings_point(
     assert len(sidecars) == 1
 
 
+def test_cli_reports_runtime_failures_without_a_traceback(
+    runner: CliRunner,
+    cli_orchestrator: dict[str, Any],
+    cli_env: None,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail(self: FakeGenerator, **kwargs: Any) -> list[Any]:
+        raise RuntimeError("CUDA unavailable")
+
+    monkeypatch.setattr(FakeGenerator, "generate", fail)
+    result = runner.invoke(app, ["generate", USER_PROMPT])
+
+    assert result.exit_code == 1
+    output = plain(result.stdout + (result.stderr or ""))
+    assert "Error: CUDA unavailable" in output
+    assert "Traceback" not in output
+
+
 def test_cli_info_reports_configuration(
     runner: CliRunner, cli_env: None, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -217,25 +221,44 @@ def test_cli_info_reports_configuration(
 
     assert result.exit_code == 0, result.stdout
     output = plain(result.stdout)
-    assert "int8 weights, float16 compute (quanto)" in output
+    assert "int8 linear weights, float16 compute (quanto)" in output
     assert "Animagine XL 4.0 Opt" in output
     assert "DreamShaper XL v2 Turbo" in output
-    assert "Dreamlike Anime 1.0" in output
+    assert "Eimis Anime Diffusion 1.0v" in output
     assert "DOWN" in output
+
+
+def test_cli_reports_invalid_environment_without_traceback(
+    runner: CliRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ANIMEGEN_MODEL__DEFAULT", "unknown")
+
+    result = runner.invoke(app, ["info"])
+
+    output = plain(result.stdout + (result.stderr or ""))
+    assert result.exit_code != 0
+    assert "Invalid configuration" in output
+    assert "Traceback" not in output
+
+
+@pytest.mark.parametrize("port", ["0", "65536"])
+def test_cli_rejects_invalid_ui_port(runner: CliRunner, port: str) -> None:
+    result = runner.invoke(app, ["ui", "--port", port])
+
+    assert result.exit_code != 0
+    assert "65535" in plain(result.stdout + (result.stderr or ""))
 
 
 @pytest.mark.parametrize(
     ("value", "expected"), [("832x1216", (832, 1216)), ("1024X1024", (1024, 1024))]
 )
-def test_parse_size_accepts_valid_sizes(
-    settings: Settings, value: str, expected: tuple[int, int]
-) -> None:
-    assert parse_size(value, settings) == expected
+def test_parse_size_accepts_valid_sizes(value: str, expected: tuple[int, int]) -> None:
+    assert parse_size(value) == expected
 
 
 @pytest.mark.parametrize("value", ["832", "832x", "axb", "833x1216", "0x0", "-8x8"])
-def test_parse_size_rejects_invalid_sizes(settings: Settings, value: str) -> None:
+def test_parse_size_rejects_invalid_sizes(value: str) -> None:
     import typer
 
     with pytest.raises(typer.BadParameter):
-        parse_size(value, settings)
+        parse_size(value)

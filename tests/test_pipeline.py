@@ -1,7 +1,8 @@
-"""Tests for selectable INT8 image pipelines; no real GPU or weights are used."""
+"""Unit tests for the lazy image pipeline with INT8 linear weights."""
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -9,11 +10,15 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from animegen.config import DEFAULT_CONFIG_FILE, Settings, load_settings
+from animegen.config import SEED_MAX, Settings
 from animegen.sd import pipeline as pipeline_module
-from animegen.sd.pipeline import SEED_MAX, GenerationResult, SDXLGenerator
+from animegen.sd.pipeline import GenerationResult, ImageGenerator
 
-PROMPT = "six teenagers dancing, string lights, 2.5D anime style"
+PROMPT = "six teenagers dancing under string lights"
+
+
+class FakeOutOfMemoryError(RuntimeError):
+    pass
 
 
 class FakeTorchGenerator:
@@ -21,7 +26,7 @@ class FakeTorchGenerator:
         self.device = device
         self.seed: int | None = None
 
-    def manual_seed(self, seed: int) -> "FakeTorchGenerator":
+    def manual_seed(self, seed: int) -> FakeTorchGenerator:
         self.seed = seed
         return self
 
@@ -30,16 +35,15 @@ def make_fake_torch(cuda_available: bool = True) -> SimpleNamespace:
     created: list[FakeTorchGenerator] = []
 
     def generator_factory(device: str = "cpu") -> FakeTorchGenerator:
-        instance = FakeTorchGenerator(device)
-        created.append(instance)
-        return instance
+        generator = FakeTorchGenerator(device)
+        created.append(generator)
+        return generator
 
     return SimpleNamespace(
         float16="dtype:float16",
-        float32="dtype:float32",
-        bfloat16="dtype:bfloat16",
         Generator=generator_factory,
         cuda=SimpleNamespace(
+            OutOfMemoryError=FakeOutOfMemoryError,
             is_available=lambda: cuda_available,
             empty_cache=MagicMock(name="empty_cache"),
         ),
@@ -50,15 +54,22 @@ def make_fake_torch(cuda_available: bool = True) -> SimpleNamespace:
 class FakePipe:
     def __init__(self) -> None:
         self.scheduler: Any = SimpleNamespace(config={"stock": "scheduler-config"})
+        self.vae = SimpleNamespace(enable_tiling=MagicMock(name="enable_tiling"))
         self.enable_model_cpu_offload = MagicMock(name="enable_model_cpu_offload")
-        self.enable_vae_tiling = MagicMock(name="enable_vae_tiling")
         self.set_progress_bar_config = MagicMock(name="set_progress_bar_config")
-        self.to = MagicMock(name="to")
         self.calls: list[dict[str, Any]] = []
+        self.error: BaseException | None = None
+        self.images: list[Any] | None = None
 
     def __call__(self, **kwargs: Any) -> SimpleNamespace:
         self.calls.append(kwargs)
-        return SimpleNamespace(images=[f"image-{len(self.calls)}"])
+        if self.error is not None:
+            raise self.error
+        images = [f"image-{len(self.calls)}"] if self.images is None else self.images
+        return SimpleNamespace(images=images)
+
+    def reset_scheduler(self) -> None:
+        self.scheduler = SimpleNamespace(config={"stock": "scheduler-config"})
 
 
 def make_fake_diffusers(pipe: FakePipe) -> SimpleNamespace:
@@ -66,24 +77,22 @@ def make_fake_diffusers(pipe: FakePipe) -> SimpleNamespace:
         AutoencoderKL=SimpleNamespace(
             from_pretrained=MagicMock(return_value="fp16-fix-vae")
         ),
-        DiffusionPipeline=SimpleNamespace(
-            from_pretrained=MagicMock(return_value=pipe)
-        ),
+        DiffusionPipeline=SimpleNamespace(from_pretrained=MagicMock(return_value=pipe)),
         DPMSolverMultistepScheduler=SimpleNamespace(
-            from_config=MagicMock(return_value="karras-scheduler")
+            from_config=MagicMock(return_value="karras-multistep")
+        ),
+        DPMSolverSinglestepScheduler=SimpleNamespace(
+            from_config=MagicMock(return_value="karras-singlestep")
         ),
         EulerAncestralDiscreteScheduler=SimpleNamespace(
-            from_config=MagicMock(return_value="euler-a-scheduler")
+            from_config=MagicMock(return_value="euler-a")
         ),
     )
 
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
-    return load_settings(
-        DEFAULT_CONFIG_FILE,
-        paths={"models_dir": tmp_path / "models", "outputs_dir": tmp_path / "outputs"},
-    )
+    return Settings(outputs_dir=tmp_path / "outputs")
 
 
 @pytest.fixture
@@ -91,237 +100,183 @@ def fakes(monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
     pipe = FakePipe()
     torch = make_fake_torch()
     diffusers = make_fake_diffusers(pipe)
+    quantization = MagicMock(return_value="quanto-int8")
     monkeypatch.setattr(pipeline_module, "_torch", lambda: torch)
     monkeypatch.setattr(pipeline_module, "_diffusers", lambda: diffusers)
-    monkeypatch.setattr(
-        pipeline_module, "_int8_quantization_config", lambda profile: "quanto-int8"
+    monkeypatch.setattr(pipeline_module, "_int8_quantization_config", quantization)
+    return SimpleNamespace(
+        pipe=pipe,
+        torch=torch,
+        diffusers=diffusers,
+        quantization=quantization,
     )
-    return SimpleNamespace(pipe=pipe, torch=torch, diffusers=diffusers)
 
 
 @pytest.fixture
-def generator(settings: Settings, fakes: SimpleNamespace) -> SDXLGenerator:
-    return SDXLGenerator(settings=settings)
+def generator(settings: Settings, fakes: SimpleNamespace) -> ImageGenerator:
+    return ImageGenerator(settings)
 
 
-def test_default_profile_loads_dreamshaper_with_int8_config(
-    generator: SDXLGenerator, fakes: SimpleNamespace
+def test_balanced_profile_loads_int8_sdxl_pipeline(
+    generator: ImageGenerator, fakes: SimpleNamespace
 ) -> None:
     generator.load()
 
     call = fakes.diffusers.DiffusionPipeline.from_pretrained.call_args
     assert call.args == ("Lykon/dreamshaper-xl-v2-turbo",)
-    assert call.kwargs["quantization_config"] == "quanto-int8"
-    assert call.kwargs["torch_dtype"] == fakes.torch.float16
-    assert call.kwargs["use_safetensors"] is True
-    assert call.kwargs["variant"] == "fp16"
-    assert call.kwargs["vae"] == "fp16-fix-vae"
-    assert generator.model_key == "balanced"
-
-
-def test_sdxl_profiles_use_the_stable_fp16_vae(
-    generator: SDXLGenerator, fakes: SimpleNamespace
-) -> None:
-    generator.load("best")
-
+    assert call.kwargs == {
+        "torch_dtype": fakes.torch.float16,
+        "quantization_config": "quanto-int8",
+        "use_safetensors": True,
+        "variant": "fp16",
+        "vae": "fp16-fix-vae",
+    }
     fakes.diffusers.AutoencoderKL.from_pretrained.assert_called_once_with(
         "madebyollin/sdxl-vae-fp16-fix",
         torch_dtype=fakes.torch.float16,
         use_safetensors=True,
     )
-
-
-def test_fast_profile_uses_its_bundled_vae(
-    generator: SDXLGenerator, fakes: SimpleNamespace
-) -> None:
-    generator.load("fast")
-
-    fakes.diffusers.AutoencoderKL.from_pretrained.assert_not_called()
-    call = fakes.diffusers.DiffusionPipeline.from_pretrained.call_args
-    assert call.args == ("dreamlike-art/dreamlike-anime-1.0",)
-    assert "vae" not in call.kwargs
-
-
-def test_load_enables_cpu_offload_and_vae_tiling(
-    generator: SDXLGenerator, fakes: SimpleNamespace
-) -> None:
-    generator.load()
-
-    fakes.pipe.enable_model_cpu_offload.assert_called_once_with()
-    fakes.pipe.enable_vae_tiling.assert_called_once_with()
-    fakes.pipe.to.assert_not_called()
-    assert generator.device == "cuda"
-
-
-def test_load_uses_the_current_vae_tiling_api(
-    generator: SDXLGenerator, fakes: SimpleNamespace
-) -> None:
-    vae = SimpleNamespace(enable_tiling=MagicMock(name="enable_tiling"))
-    fakes.pipe.vae = vae
-
-    generator.load()
-
-    vae.enable_tiling.assert_called_once_with()
-    fakes.pipe.enable_vae_tiling.assert_not_called()
-
-
-def test_default_profile_installs_karras_scheduler(
-    generator: SDXLGenerator, fakes: SimpleNamespace
-) -> None:
-    generator.load()
-
     fakes.diffusers.DPMSolverMultistepScheduler.from_config.assert_called_once_with(
         {"stock": "scheduler-config"}, use_karras_sigmas=True
     )
-    assert fakes.pipe.scheduler == "karras-scheduler"
+    assert fakes.pipe.scheduler == "karras-multistep"
 
 
-def test_best_profile_uses_euler_ancestral_without_karras(
-    generator: SDXLGenerator, fakes: SimpleNamespace
+def test_fast_profile_uses_bundled_vae_and_singlestep_scheduler(
+    generator: ImageGenerator, fakes: SimpleNamespace
+) -> None:
+    generator.load("fast")
+
+    call = fakes.diffusers.DiffusionPipeline.from_pretrained.call_args
+    assert call.args == ("eimiss/EimisAnimeDiffusion_1.0v",)
+    assert "vae" not in call.kwargs
+    assert "variant" not in call.kwargs
+    fakes.diffusers.AutoencoderKL.from_pretrained.assert_not_called()
+    fakes.diffusers.DPMSolverSinglestepScheduler.from_config.assert_called_once_with(
+        {"stock": "scheduler-config"}, use_karras_sigmas=True
+    )
+    assert fakes.pipe.scheduler == "karras-singlestep"
+
+
+def test_best_profile_uses_euler_ancestral_scheduler(
+    generator: ImageGenerator, fakes: SimpleNamespace
 ) -> None:
     generator.load("best")
 
     fakes.diffusers.EulerAncestralDiscreteScheduler.from_config.assert_called_once_with(
         {"stock": "scheduler-config"}
     )
-    assert fakes.pipe.scheduler == "euler-a-scheduler"
+    assert fakes.pipe.scheduler == "euler-a"
 
 
-def test_unknown_scheduler_raises(settings: Settings, fakes: SimpleNamespace) -> None:
-    settings.model.profiles["balanced"].scheduler = "NoSuchScheduler"
+def test_load_enables_cpu_offload_tiling_and_quiet_progress(
+    generator: ImageGenerator, fakes: SimpleNamespace
+) -> None:
+    generator.load()
 
-    with pytest.raises(ValueError, match="Unknown scheduler"):
-        SDXLGenerator(settings=settings).load()
+    fakes.pipe.enable_model_cpu_offload.assert_called_once_with()
+    fakes.pipe.vae.enable_tiling.assert_called_once_with()
+    fakes.pipe.set_progress_bar_config.assert_called_once_with(disable=True)
 
 
-def test_int8_mode_requires_cuda(
+def test_int8_pipeline_requires_cuda(
     settings: Settings, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    pipe = FakePipe()
     torch = make_fake_torch(cuda_available=False)
     monkeypatch.setattr(pipeline_module, "_torch", lambda: torch)
-    monkeypatch.setattr(pipeline_module, "_diffusers", lambda: make_fake_diffusers(pipe))
 
     with pytest.raises(RuntimeError, match="requires an NVIDIA CUDA GPU"):
-        SDXLGenerator(settings=settings).load()
+        ImageGenerator(settings).load()
 
 
-def test_non_int8_configuration_is_rejected(
-    settings: Settings, fakes: SimpleNamespace
-) -> None:
-    settings.vram.weight_dtype = "float16"
-
-    with pytest.raises(ValueError, match="weight_dtype=int8"):
-        SDXLGenerator(settings=settings).load()
-
-
-def test_load_is_idempotent(generator: SDXLGenerator, fakes: SimpleNamespace) -> None:
+def test_load_is_idempotent(generator: ImageGenerator, fakes: SimpleNamespace) -> None:
     generator.load()
     generator.load()
 
     assert fakes.diffusers.DiffusionPipeline.from_pretrained.call_count == 1
-    assert generator.is_loaded is True
 
 
-def test_pipe_property_does_not_replace_an_active_non_default_profile(
-    generator: SDXLGenerator, fakes: SimpleNamespace
-) -> None:
-    generator.load("best")
-
-    assert generator.pipe is fakes.pipe
-    assert generator.model_key == "best"
-    assert fakes.diffusers.DiffusionPipeline.from_pretrained.call_count == 1
-
-
-def test_switching_profiles_replaces_the_loaded_pipeline(
-    generator: SDXLGenerator, fakes: SimpleNamespace
+def test_switching_profiles_unloads_the_previous_pipeline(
+    generator: ImageGenerator, fakes: SimpleNamespace
 ) -> None:
     generator.load("balanced")
-    # Real Diffusers calls return a fresh pipeline. This lightweight fake is
-    # intentionally reused, so restore the scheduler object before reloading.
-    fakes.pipe.scheduler = SimpleNamespace(config={"stock": "scheduler-config"})
+    fakes.pipe.reset_scheduler()
     generator.load("best")
 
     assert fakes.diffusers.DiffusionPipeline.from_pretrained.call_count == 2
-    assert generator.model_key == "best"
-    assert fakes.torch.cuda.empty_cache.call_count == 1
+    fakes.torch.cuda.empty_cache.assert_called_once_with()
 
 
-def test_generate_returns_one_result_per_image(
-    generator: SDXLGenerator, fakes: SimpleNamespace
+def test_unload_allows_a_clean_reload(
+    generator: ImageGenerator, fakes: SimpleNamespace
+) -> None:
+    generator.load()
+    generator.unload()
+    fakes.pipe.reset_scheduler()
+    generator.load()
+
+    assert fakes.diffusers.DiffusionPipeline.from_pretrained.call_count == 2
+    fakes.torch.cuda.empty_cache.assert_called_once_with()
+
+
+def test_generate_returns_sequential_seeded_results(
+    generator: ImageGenerator, fakes: SimpleNamespace
 ) -> None:
     results = generator.generate(PROMPT, seed=1234, images=3)
 
-    assert [r.image for r in results] == ["image-1", "image-2", "image-3"]
-    assert all(isinstance(r, GenerationResult) for r in results)
-    assert len(fakes.pipe.calls) == 3
+    assert [result.image for result in results] == ["image-1", "image-2", "image-3"]
+    assert [result.seed for result in results] == [1234, 1235, 1236]
+    assert all(isinstance(result, GenerationResult) for result in results)
+    assert [item.seed for item in fakes.torch.generators] == [1234, 1235, 1236]
+    assert {item.device for item in fakes.torch.generators} == {"cpu"}
 
 
-def test_seeds_are_deterministic_and_sequential(
-    generator: SDXLGenerator, fakes: SimpleNamespace
-) -> None:
-    results = generator.generate(PROMPT, seed=1234, images=3)
-
-    assert [r.seed for r in results] == [1234, 1235, 1236]
-    assert [g.seed for g in fakes.torch.generators] == [1234, 1235, 1236]
-    assert {g.device for g in fakes.torch.generators} == {"cpu"}
-
-
-def test_random_seed_is_drawn_and_recorded(
-    generator: SDXLGenerator,
+def test_random_seed_is_recorded(
+    generator: ImageGenerator,
     fakes: SimpleNamespace,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(pipeline_module.random, "randint", lambda a, b: 999)
+    monkeypatch.setattr(pipeline_module.random, "randint", lambda start, end: 999)
 
     results = generator.generate(PROMPT, images=2)
 
-    assert [r.seed for r in results] == [999, 1000]
+    assert [result.seed for result in results] == [999, 1000]
 
 
-def test_seed_wraps_at_boundary(
-    generator: SDXLGenerator, fakes: SimpleNamespace
+def test_seed_wraps_at_uint32_boundary(
+    generator: ImageGenerator, fakes: SimpleNamespace
 ) -> None:
     results = generator.generate(PROMPT, seed=SEED_MAX, images=2)
 
-    assert [r.seed for r in results] == [SEED_MAX, 0]
+    assert [result.seed for result in results] == [SEED_MAX, 0]
 
 
-def test_balanced_profile_defaults_reach_the_pipeline(
-    generator: SDXLGenerator, fakes: SimpleNamespace
+@pytest.mark.parametrize(
+    ("model", "steps", "guidance", "size"),
+    [
+        ("balanced", 6, 2.0, (832, 1216)),
+        ("best", 28, 5.0, (832, 1216)),
+        ("fast", 20, 9.0, (768, 832)),
+    ],
+)
+def test_profile_defaults_reach_the_pipeline(
+    generator: ImageGenerator,
+    fakes: SimpleNamespace,
+    model: str,
+    steps: int,
+    guidance: float,
+    size: tuple[int, int],
 ) -> None:
-    generator.generate(PROMPT, seed=1, model="balanced")
+    generator.generate(PROMPT, seed=1, model=model)
 
     call = fakes.pipe.calls[0]
-    assert call["num_inference_steps"] == 6
-    assert call["guidance_scale"] == pytest.approx(2.0)
-    assert (call["width"], call["height"]) == (832, 1216)
+    assert call["num_inference_steps"] == steps
+    assert call["guidance_scale"] == pytest.approx(guidance)
+    assert (call["width"], call["height"]) == size
 
 
-def test_best_profile_defaults_reach_the_pipeline(
-    generator: SDXLGenerator, fakes: SimpleNamespace
-) -> None:
-    generator.generate(PROMPT, seed=1, model="best")
-
-    call = fakes.pipe.calls[0]
-    assert call["num_inference_steps"] == 28
-    assert call["guidance_scale"] == pytest.approx(5.0)
-    assert (call["width"], call["height"]) == (832, 1216)
-
-
-def test_fast_profile_defaults_reach_the_pipeline(
-    generator: SDXLGenerator, fakes: SimpleNamespace
-) -> None:
-    generator.generate(PROMPT, seed=1, model="fast")
-
-    call = fakes.pipe.calls[0]
-    assert call["num_inference_steps"] == 20
-    assert call["guidance_scale"] == pytest.approx(7.5)
-    assert (call["width"], call["height"]) == (768, 768)
-
-
-def test_explicit_overrides_reach_the_pipeline(
-    generator: SDXLGenerator, fakes: SimpleNamespace
+def test_explicit_generation_options_reach_the_pipeline(
+    generator: ImageGenerator, fakes: SimpleNamespace
 ) -> None:
     generator.generate(
         PROMPT,
@@ -341,19 +296,19 @@ def test_explicit_overrides_reach_the_pipeline(
 
 
 @pytest.mark.parametrize(("requested", "expected"), [(1, 4), (6, 6), (12, 8)])
-def test_steps_are_clamped_to_the_selected_profile(
-    generator: SDXLGenerator,
+def test_steps_are_clamped_to_the_profile(
+    generator: ImageGenerator,
     fakes: SimpleNamespace,
     requested: int,
     expected: int,
 ) -> None:
-    generator.generate(PROMPT, seed=1, model="balanced", steps=requested)
+    generator.generate(PROMPT, seed=1, steps=requested)
 
     assert fakes.pipe.calls[0]["num_inference_steps"] == expected
 
 
 def test_image_count_is_capped(
-    generator: SDXLGenerator,
+    generator: ImageGenerator,
     fakes: SimpleNamespace,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -365,75 +320,51 @@ def test_image_count_is_capped(
 
 
 def test_result_metadata_records_model_and_precision(
-    generator: SDXLGenerator, fakes: SimpleNamespace
+    generator: ImageGenerator, fakes: SimpleNamespace
 ) -> None:
-    result = generator.generate(PROMPT, seed=42, model="balanced")[0]
+    result = generator.generate(PROMPT, seed=42)[0]
 
     assert result.settings["model_key"] == "balanced"
     assert result.settings["model"] == "DreamShaper XL v2 Turbo"
     assert result.settings["model_repo"] == "Lykon/dreamshaper-xl-v2-turbo"
-    assert result.settings["weight_dtype"] == "int8"
+    assert result.settings["linear_weight_dtype"] == "int8"
     assert result.settings["compute_dtype"] == "float16"
     assert result.settings["quantization_backend"] == "quanto"
     assert result.settings["estimated_render_time"] == "15-30 seconds"
     assert result.duration_s >= 0.0
 
 
-def test_generate_loads_on_demand(
-    generator: SDXLGenerator, fakes: SimpleNamespace
+@pytest.mark.parametrize("seed", [-1, SEED_MAX + 1])
+def test_invalid_seed_is_rejected_before_loading(
+    generator: ImageGenerator, fakes: SimpleNamespace, seed: int
 ) -> None:
-    assert generator.is_loaded is False
-    generator.generate(PROMPT, seed=1)
-    assert generator.is_loaded is True
+    with pytest.raises(ValueError, match="seed must be between"):
+        generator.generate(PROMPT, seed=seed)
+
+    fakes.diffusers.DiffusionPipeline.from_pretrained.assert_not_called()
 
 
-def test_cuda_cache_is_emptied_after_run(
-    generator: SDXLGenerator, fakes: SimpleNamespace
+@pytest.mark.parametrize(("width", "height"), [(0, 512), (513, 512), (512, 0)])
+def test_invalid_dimensions_are_rejected_before_loading(
+    generator: ImageGenerator,
+    fakes: SimpleNamespace,
+    width: int,
+    height: int,
 ) -> None:
-    generator.generate(PROMPT, seed=1, images=2)
+    with pytest.raises(ValueError):
+        generator.generate(PROMPT, width=width, height=height)
 
-    fakes.torch.cuda.empty_cache.assert_called_once_with()
+    fakes.diffusers.DiffusionPipeline.from_pretrained.assert_not_called()
 
 
-def test_cache_emptying_can_be_disabled(
-    settings: Settings, fakes: SimpleNamespace
+@pytest.mark.parametrize("guidance", [-0.1, float("inf"), float("nan")])
+def test_invalid_guidance_is_rejected_before_loading(
+    generator: ImageGenerator, fakes: SimpleNamespace, guidance: float
 ) -> None:
-    settings.vram.empty_cache_after_run = False
+    with pytest.raises(ValueError, match="finite, non-negative"):
+        generator.generate(PROMPT, guidance=guidance)
 
-    SDXLGenerator(settings=settings).generate(PROMPT, seed=1)
-
-    fakes.torch.cuda.empty_cache.assert_not_called()
-
-
-def test_unload_releases_pipeline_and_vram(
-    generator: SDXLGenerator, fakes: SimpleNamespace
-) -> None:
-    generator.load()
-    generator.unload()
-
-    assert generator.is_loaded is False
-    assert generator.device is None
-    assert generator.model_key is None
-    fakes.torch.cuda.empty_cache.assert_called_once_with()
-
-
-def test_context_manager_loads_and_unloads(
-    settings: Settings, fakes: SimpleNamespace
-) -> None:
-    with SDXLGenerator(settings=settings) as gen:
-        assert gen.is_loaded is True
-    assert gen.is_loaded is False
-
-
-def test_warmup_uses_one_step_without_profile_clamping(
-    generator: SDXLGenerator, fakes: SimpleNamespace
-) -> None:
-    generator.warmup("best")
-
-    call = fakes.pipe.calls[0]
-    assert (call["width"], call["height"]) == (512, 512)
-    assert call["num_inference_steps"] == 1
-    assert generator.model_key == "best"
+    fakes.diffusers.DiffusionPipeline.from_pretrained.assert_not_called()
 
 
 @pytest.mark.parametrize(
@@ -441,13 +372,83 @@ def test_warmup_uses_one_step_without_profile_clamping(
     [
         ({"prompt": "   "}, "prompt must not be empty"),
         ({"prompt": PROMPT, "images": 0}, "images must be >= 1"),
+        ({"prompt": PROMPT, "steps": 0}, "steps must be >= 1"),
+        ({"prompt": PROMPT, "images": 1.5}, "images must be a whole number"),
+        ({"prompt": PROMPT, "width": 512.5}, "width must be a whole number"),
+        ({"prompt": PROMPT, "steps": True}, "steps must be a whole number"),
+        ({"prompt": PROMPT, "seed": 1.5}, "seed must be a whole number"),
     ],
 )
-def test_invalid_arguments_raise(
-    generator: SDXLGenerator,
-    fakes: SimpleNamespace,
+def test_other_invalid_arguments_raise(
+    generator: ImageGenerator,
     kwargs: dict[str, Any],
     message: str,
 ) -> None:
     with pytest.raises(ValueError, match=message):
         generator.generate(**kwargs)
+
+
+def test_cuda_cache_is_emptied_when_generation_fails(
+    generator: ImageGenerator, fakes: SimpleNamespace
+) -> None:
+    fakes.pipe.error = RuntimeError("render failed")
+
+    with pytest.raises(RuntimeError, match="render failed"):
+        generator.generate(PROMPT, seed=1)
+
+    fakes.torch.cuda.empty_cache.assert_called_once_with()
+
+
+def test_oom_unloads_pipeline_and_reports_actionable_error(
+    generator: ImageGenerator, fakes: SimpleNamespace
+) -> None:
+    fakes.pipe.error = FakeOutOfMemoryError("out of memory")
+
+    with pytest.raises(RuntimeError, match="close other GPU apps"):
+        generator.generate(PROMPT, seed=1)
+
+    assert fakes.torch.cuda.empty_cache.call_count == 2
+    fakes.pipe.error = None
+    fakes.pipe.reset_scheduler()
+    generator.load()
+    assert fakes.diffusers.DiffusionPipeline.from_pretrained.call_count == 2
+
+
+def test_failed_load_cleans_cache_and_can_be_retried(
+    generator: ImageGenerator, fakes: SimpleNamespace
+) -> None:
+    loader = fakes.diffusers.DiffusionPipeline.from_pretrained
+    loader.side_effect = RuntimeError("download failed")
+
+    with pytest.raises(RuntimeError, match="download failed"):
+        generator.load()
+
+    fakes.torch.cuda.empty_cache.assert_called_once_with()
+    loader.side_effect = None
+    loader.return_value = fakes.pipe
+    generator.load()
+    assert loader.call_count == 2
+
+
+def test_missing_output_image_is_an_error_and_cleans_cache(
+    generator: ImageGenerator, fakes: SimpleNamespace
+) -> None:
+    fakes.pipe.images = []
+
+    with pytest.raises(RuntimeError, match="returned no image"):
+        generator.generate(PROMPT, seed=1)
+
+    fakes.torch.cuda.empty_cache.assert_called_once_with()
+
+
+def test_unknown_scheduler_is_reported(
+    settings: Settings, fakes: SimpleNamespace
+) -> None:
+    settings.profiles["balanced"] = replace(
+        settings.profiles["balanced"], scheduler="NoSuchScheduler"
+    )
+
+    with pytest.raises(ValueError, match="Unknown scheduler"):
+        ImageGenerator(settings).load()
+
+    fakes.torch.cuda.empty_cache.assert_called_once_with()

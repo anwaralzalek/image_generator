@@ -2,30 +2,37 @@
 
 Examples:
     animegen generate "American teenagers having fun at a party"
-    animegen generate "rooftop party at dusk" --images 4 --seed 1234 --warmup
+    animegen generate "rooftop party at dusk" --images 4 --seed 1234
     animegen generate "beach party" --no-llm --size 1024x1024 --steps 8
 """
 
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import Annotated, Optional
 
 import typer
 
 from animegen import __version__
-from animegen.config import Settings, load_settings
+from animegen.config import (
+    COMPUTE_DTYPE,
+    LINEAR_WEIGHT_DTYPE,
+    MAX_IMAGES,
+    QUANTIZATION_BACKEND,
+    SEED_MAX,
+    Settings,
+    load_settings,
+    parse_dimensions,
+)
 from animegen.core.orchestrator import Orchestrator, RunResult
-
-LOGGER = logging.getLogger(__name__)
 
 app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
     help=(
         "Generate semi-3D (2.5D) anime images locally with three selectable "
-        "INT8 image-quality tiers and optional Ollama prompt enhancement."
+        "image-quality tiers, INT8 linear weights, and optional Ollama prompt "
+        "enhancement."
     ),
 )
 
@@ -43,37 +50,11 @@ def setup_logging(verbose: bool = False) -> None:
             logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-def parse_size(value: str, settings: Settings) -> tuple[int, int]:
-    """Parse a ``WIDTHxHEIGHT`` string into pixel dimensions.
-
-    Args:
-        value: Size such as ``832x1216``.
-        settings: Active settings, used to warn about untested sizes.
-
-    Returns:
-        A ``(width, height)`` tuple.
-
-    Raises:
-        typer.BadParameter: If the format is wrong or the dimensions are not
-            positive multiples of 8 (SDXL's latent stride).
-    """
-    parts = value.lower().replace(" ", "").split("x")
-    if len(parts) != 2 or not all(part.isdigit() for part in parts):
-        raise typer.BadParameter(
-            f"'{value}' is not a WIDTHxHEIGHT size, e.g. 832x1216"
-        )
-    width, height = (int(part) for part in parts)
-    if width <= 0 or height <= 0 or width % 8 or height % 8:
-        raise typer.BadParameter(
-            f"'{value}': width and height must be positive multiples of 8"
-        )
-    if value.lower() not in [size.lower() for size in settings.allowed_sizes]:
-        LOGGER.warning(
-            "Size %s is outside the tested set %s; expect slower renders or OOM",
-            value,
-            ", ".join(settings.allowed_sizes),
-        )
-    return width, height
+def parse_size(value: str) -> tuple[int, int]:
+    try:
+        return parse_dimensions(value)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from None
 
 
 def _version_callback(value: bool) -> None:
@@ -85,10 +66,6 @@ def _version_callback(value: bool) -> None:
 @app.callback()
 def main_callback(
     ctx: typer.Context,
-    config: Annotated[
-        Optional[Path],
-        typer.Option("--config", help="Settings file (default: config/settings.yaml)."),
-    ] = None,
     verbose: Annotated[
         bool, typer.Option("--verbose", "-v", help="Enable debug logging.")
     ] = False,
@@ -104,21 +81,35 @@ def main_callback(
 ) -> None:
     """Load settings once and hand them to the subcommands."""
     setup_logging(verbose)
-    ctx.obj = load_settings(config)
+    try:
+        ctx.obj = load_settings()
+    except ValueError as exc:
+        raise typer.BadParameter(f"Invalid configuration: {exc}") from None
 
 
 @app.command()
 def generate(
     ctx: typer.Context,
     prompt: Annotated[
-        str, typer.Argument(help='Your idea, e.g. "American teenagers having fun at a party".')
+        str,
+        typer.Argument(
+            help='Your idea, e.g. "American teenagers having fun at a party".'
+        ),
     ],
     images: Annotated[
-        int, typer.Option("--images", "-n", min=1, help="How many images to render.")
+        int,
+        typer.Option(
+            "--images", "-n", min=1, max=MAX_IMAGES, help="How many images to render."
+        ),
     ] = 1,
     seed: Annotated[
         Optional[int],
-        typer.Option("--seed", help="Seed of the first image (random when omitted)."),
+        typer.Option(
+            "--seed",
+            min=0,
+            max=SEED_MAX,
+            help="Seed of the first image (random when omitted).",
+        ),
     ] = None,
     size: Annotated[
         Optional[str],
@@ -126,10 +117,15 @@ def generate(
     ] = None,
     steps: Annotated[
         Optional[int],
-        typer.Option("--steps", help="Denoising steps (clamped to the model's tested range)."),
+        typer.Option(
+            "--steps",
+            min=1,
+            help="Denoising steps (clamped to the model's tested range).",
+        ),
     ] = None,
     guidance: Annotated[
-        Optional[float], typer.Option("--guidance", help="Classifier-free guidance scale.")
+        Optional[float],
+        typer.Option("--guidance", min=0, help="Classifier-free guidance scale."),
     ] = None,
     model: Annotated[
         Optional[str],
@@ -138,38 +134,31 @@ def generate(
     no_llm: Annotated[
         bool, typer.Option("--no-llm", help="Skip Ollama; render the raw prompt.")
     ] = False,
-    warmup: Annotated[
-        bool,
-        typer.Option(
-            "--warmup",
-            help="Render a throwaway image first so the real one is not the slow one.",
-        ),
-    ] = False,
 ) -> None:
     """Generate images from PROMPT and save them under outputs/."""
     settings: Settings = ctx.obj or load_settings()
     try:
-        model_key, profile = settings.image_model(model)
+        model_key, _ = settings.image_model(model)
     except ValueError as exc:
         raise typer.BadParameter(str(exc), param_hint="--model") from None
-    width, height = parse_size(size, settings) if size else (None, None)
+    width, height = parse_size(size) if size else (None, None)
 
     orchestrator = Orchestrator(settings=settings)
-    if warmup:
-        typer.echo(f"Warming up {profile.name}...")
-        orchestrator.warmup(model=model_key)
-
-    result = orchestrator.run(
-        prompt=prompt,
-        images=images,
-        seed=seed,
-        width=width,
-        height=height,
-        steps=steps,
-        guidance=guidance,
-        model=model_key,
-        use_llm=not no_llm,
-    )
+    try:
+        result = orchestrator.run(
+            prompt=prompt,
+            images=images,
+            seed=seed,
+            width=width,
+            height=height,
+            steps=steps,
+            guidance=guidance,
+            model=model_key,
+            use_llm=not no_llm,
+        )
+    except (ValueError, RuntimeError, OSError) as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(1) from None
     _print_summary(result)
 
 
@@ -182,7 +171,7 @@ def _print_summary(result: RunResult) -> None:
         model_settings = result.images[0].metadata.get("settings", {})
         typer.echo(
             f"Model      : {model_settings.get('model', '?')} "
-            f"({model_settings.get('weight_dtype', '?')}, "
+            f"({model_settings.get('linear_weight_dtype', '?')} linear weights, "
             f"estimated {model_settings.get('estimated_render_time', '?')})"
         )
     if not result.llm_enabled:
@@ -205,23 +194,21 @@ def ui(
     host: Annotated[
         str, typer.Option("--host", help="Interface to bind.")
     ] = "127.0.0.1",
-    port: Annotated[int, typer.Option("--port", help="TCP port.")] = 7860,
-    share: Annotated[
-        bool, typer.Option("--share", help="Expose a public gradio.live tunnel.")
-    ] = False,
-    warmup: Annotated[
-        Optional[bool],
-        typer.Option(
-            "--warmup/--no-warmup",
-            help="Render a throwaway image at startup (default: ANIMEGEN_UI_WARMUP).",
-        ),
-    ] = None,
+    port: Annotated[
+        int, typer.Option("--port", min=1, max=65535, help="TCP port.")
+    ] = 7860,
 ) -> None:
     """Serve the Gradio demo interface."""
+    try:
+        import gradio  # noqa: F401
+    except ImportError:
+        raise typer.BadParameter(
+            'UI dependencies are missing; install with pip install -e ".[ui]"'
+        ) from None
     from animegen.ui.app import DemoApp
 
     settings: Settings = ctx.obj or load_settings()
-    DemoApp(settings=settings).launch(host=host, port=port, share=share, warmup=warmup)
+    DemoApp(settings=settings).launch(host=host, port=port)
 
 
 @app.command()
@@ -234,12 +221,12 @@ def info(ctx: typer.Context) -> None:
 
     typer.echo(f"animegen {__version__}")
     typer.echo(
-        f"precision  : {settings.vram.weight_dtype} weights, "
-        f"{settings.vram.dtype} compute ({settings.vram.quantization_backend})"
+        f"precision  : {LINEAR_WEIGHT_DTYPE} linear weights, "
+        f"{COMPUTE_DTYPE} compute ({QUANTIZATION_BACKEND})"
     )
     typer.echo("image models:")
-    for key, profile in settings.model.profiles.items():
-        marker = " (default)" if key == settings.model.default else ""
+    for key, profile in settings.profiles.items():
+        marker = " (default)" if key == settings.default_model else ""
         typer.echo(
             f"  {key:<8} {profile.name}{marker} | {profile.quality} | "
             f"{profile.default_size}, {profile.steps} steps | ~{profile.estimate}"

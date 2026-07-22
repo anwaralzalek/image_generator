@@ -4,13 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
-from animegen.config import DEFAULT_CONFIG_FILE, Settings, load_settings
+from animegen.config import SEED_MAX, Settings
 from animegen.core.orchestrator import Orchestrator
-from animegen.ui.app import DemoApp, env_flag, parse_seed, parse_size
+from animegen.ui.app import DemoApp, parse_seed, parse_size
 from tests.test_orchestrator import (
     LLM_OUTPUT,
     STYLE_SUFFIX,
@@ -22,10 +21,7 @@ from tests.test_orchestrator import (
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
-    return load_settings(
-        DEFAULT_CONFIG_FILE,
-        paths={"models_dir": tmp_path / "models", "outputs_dir": tmp_path / "outputs"},
-    )
+    return Settings(outputs_dir=tmp_path / "outputs")
 
 
 @pytest.fixture
@@ -54,14 +50,12 @@ def demo(
     ("value", "expected"),
     [("", None), ("   ", None), (None, None), ("1234", 1234), (" 42 ", 42), (7, 7)],
 )
-def test_parse_seed_accepts_blank_and_numbers(
-    value: Any, expected: int | None
-) -> None:
+def test_parse_seed_accepts_blank_and_numbers(value: Any, expected: int | None) -> None:
     assert parse_seed(value) == expected
 
 
-@pytest.mark.parametrize("value", ["abc", "12.5", "-1", "1e5"])
-def test_parse_seed_rejects_junk(value: str) -> None:
+@pytest.mark.parametrize("value", ["abc", "12.5", "-1", "1e5", -1, SEED_MAX + 1, True])
+def test_parse_seed_rejects_junk(value: Any) -> None:
     with pytest.raises(ValueError):
         parse_seed(value)
 
@@ -79,19 +73,6 @@ def test_parse_size_accepts_dropdown_values(
 def test_parse_size_rejects_junk(value: str) -> None:
     with pytest.raises(ValueError):
         parse_size(value)
-
-
-def test_env_flag_reads_truthy_values(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.delenv("ANIMEGEN_UI_WARMUP", raising=False)
-    assert env_flag("ANIMEGEN_UI_WARMUP") is False
-    assert env_flag("ANIMEGEN_UI_WARMUP", default=True) is True
-
-    for truthy in ("1", "true", "TRUE", "yes", "on"):
-        monkeypatch.setenv("ANIMEGEN_UI_WARMUP", truthy)
-        assert env_flag("ANIMEGEN_UI_WARMUP") is True
-
-    monkeypatch.setenv("ANIMEGEN_UI_WARMUP", "0")
-    assert env_flag("ANIMEGEN_UI_WARMUP") is False
 
 
 def test_generate_returns_gallery_details_and_status(
@@ -123,23 +104,40 @@ def test_generate_uses_the_same_orchestrator_as_the_cli(
 def test_model_selection_uses_the_profile_defaults(
     demo: DemoApp, generator: FakeGenerator
 ) -> None:
-    _, details, _ = demo.generate(
-        USER_PROMPT, images=1, seed_text="5", model="fast"
-    )
+    _, details, _ = demo.generate(USER_PROMPT, images=1, seed_text="5", model="fast")
 
     call = generator.calls[0]
     assert call["model"] == "fast"
-    assert (call["width"], call["height"]) == (768, 768)
-    assert "Dreamlike Anime 1.0" in details
+    assert (call["width"], call["height"]) == (768, 832)
+    assert "Eimis Anime Diffusion 1.0v" in details
     assert "10-25 seconds" in details
 
 
 def test_model_selection_updates_the_recommended_size(demo: DemoApp) -> None:
-    description, size = demo._model_selection("best")  # noqa: SLF001
+    description, choices, size = demo._model_selection("best")  # noqa: SLF001
 
     assert "Animagine XL 4.0 Opt" in description
     assert "INT8" in description
+    assert choices == ("832x1216", "1024x1024")
     assert size == "832x1216"
+
+
+def test_size_must_belong_to_selected_model(
+    demo: DemoApp, generator: FakeGenerator
+) -> None:
+    with pytest.raises(ValueError, match="supports"):
+        demo.generate(USER_PROMPT, model="fast", size="1024x1024")
+
+    assert generator.calls == []
+
+
+def test_image_count_must_be_a_whole_number(
+    demo: DemoApp, generator: FakeGenerator
+) -> None:
+    with pytest.raises(ValueError, match="whole number"):
+        demo.generate(USER_PROMPT, images=1.5)  # type: ignore[arg-type]
+
+    assert generator.calls == []
 
 
 def test_blank_seed_means_random(demo: DemoApp, generator: FakeGenerator) -> None:
@@ -189,8 +187,8 @@ def test_details_panel_lists_settings_and_files(demo: DemoApp) -> None:
     assert "832x1216" in details
     assert "6 steps" in details
     assert "bad anatomy" in details  # negative prompt is shown
-    assert "seed1234.png" in details
-    assert "seed1234.json" in details
+    assert "seed1234_" in details
+    assert ".png" in details and ".json" in details
 
 
 @pytest.mark.parametrize("prompt", ["", "   "])
@@ -206,59 +204,6 @@ def test_bad_seed_input_raises_before_touching_the_gpu(
         demo.generate(USER_PROMPT, seed_text="abc")
 
     assert generator.calls == []
-
-
-def test_startup_loads_the_pipeline_once(
-    settings: Settings, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    orchestrator = MagicMock(spec=Orchestrator)
-    monkeypatch.delenv("ANIMEGEN_UI_WARMUP", raising=False)
-
-    DemoApp(settings=settings, orchestrator=orchestrator).startup()
-
-    orchestrator.generator.load.assert_called_once_with()
-    orchestrator.warmup.assert_not_called()
-
-
-def test_startup_warmup_toggle_honours_the_env_var(
-    settings: Settings, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    orchestrator = MagicMock(spec=Orchestrator)
-    monkeypatch.setenv("ANIMEGEN_UI_WARMUP", "1")
-
-    DemoApp(settings=settings, orchestrator=orchestrator).startup()
-
-    orchestrator.warmup.assert_called_once_with()
-
-
-def test_startup_warmup_argument_overrides_the_env_var(
-    settings: Settings, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    orchestrator = MagicMock(spec=Orchestrator)
-    monkeypatch.setenv("ANIMEGEN_UI_WARMUP", "1")
-
-    DemoApp(settings=settings, orchestrator=orchestrator).startup(warmup=False)
-
-    orchestrator.warmup.assert_not_called()
-    orchestrator.generator.load.assert_called_once_with()
-
-
-def test_startup_survives_a_missing_checkpoint(
-    settings: Settings, caplog: pytest.LogCaptureFixture
-) -> None:
-    orchestrator = MagicMock(spec=Orchestrator)
-    orchestrator.generator.load.side_effect = FileNotFoundError("no checkpoint")
-
-    with caplog.at_level("WARNING"):
-        DemoApp(settings=settings, orchestrator=orchestrator).startup()
-
-    assert "will load on first use" in caplog.text
-
-
-def test_generations_are_serialised_by_a_lock(demo: DemoApp) -> None:
-    import threading
-
-    assert isinstance(demo._lock, threading.Lock().__class__)  # noqa: SLF001
 
 
 def test_build_requires_gradio_and_wires_a_single_worker_queue(

@@ -1,1 +1,1 @@
-"""Stable Diffusion XL generation pipeline."""
+"""Stable Diffusion generation pipelines."""

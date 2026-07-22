@@ -1,1 +1,1 @@
-"""Orchestration of the LLM -> SDXL -> disk flow."""
+"""Prompt-to-image orchestration."""

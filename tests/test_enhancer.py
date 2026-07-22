@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 import requests
 
-from animegen.config import DEFAULT_CONFIG_FILE, Settings, load_settings
+from animegen.config import SYSTEM_PROMPT, OllamaSettings, Settings, load_settings
 from animegen.llm.enhancer import EnhancedPrompt, OllamaEnhancer
 
 USER_PROMPT = "American teenagers having fun at a party"
@@ -63,16 +63,20 @@ class FakeSession:
 
 @pytest.fixture
 def settings() -> Settings:
-    return load_settings(DEFAULT_CONFIG_FILE)
+    return load_settings()
 
 
-def make_enhancer(settings: Settings, result: Any) -> tuple[OllamaEnhancer, FakeSession]:
+def make_enhancer(
+    settings: Settings, result: Any
+) -> tuple[OllamaEnhancer, FakeSession]:
     session = FakeSession(result)
     return OllamaEnhancer(settings=settings, session=session), session  # type: ignore[arg-type]
 
 
 def test_successful_enhancement_returns_model_text(settings: Settings) -> None:
-    enhancer, session = make_enhancer(settings, FakeResponse({"response": MODEL_OUTPUT}))
+    enhancer, session = make_enhancer(
+        settings, FakeResponse({"response": MODEL_OUTPUT})
+    )
 
     result = enhancer.enhance(USER_PROMPT)
 
@@ -87,7 +91,9 @@ def test_successful_enhancement_returns_model_text(settings: Settings) -> None:
 
 
 def test_request_matches_the_ollama_contract(settings: Settings) -> None:
-    enhancer, session = make_enhancer(settings, FakeResponse({"response": MODEL_OUTPUT}))
+    enhancer, session = make_enhancer(
+        settings, FakeResponse({"response": MODEL_OUTPUT})
+    )
 
     enhancer.enhance(USER_PROMPT)
     call = session.calls[0]
@@ -99,11 +105,13 @@ def test_request_matches_the_ollama_contract(settings: Settings) -> None:
     assert payload["prompt"] == USER_PROMPT
     assert payload["stream"] is False
     assert payload["options"] == {"num_gpu": 0, "temperature": 0.7}
-    assert "Stable Diffusion XL prompt engineer" in payload["system"]
+    assert payload["system"] == SYSTEM_PROMPT
 
 
 def test_llm_never_touches_the_gpu(settings: Settings) -> None:
-    enhancer, session = make_enhancer(settings, FakeResponse({"response": MODEL_OUTPUT}))
+    enhancer, session = make_enhancer(
+        settings, FakeResponse({"response": MODEL_OUTPUT})
+    )
 
     enhancer.enhance(USER_PROMPT)
 
@@ -125,9 +133,14 @@ def test_style_suffix_is_not_applied_by_the_enhancer(settings: Settings) -> None
         ("'single quoted, dusk'", "single quoted, dusk"),
         ("  padded prompt, neon  \n", "padded prompt, neon"),
         ("Prompt: teenagers dancing, confetti", "teenagers dancing, confetti"),
+        ("**Prompt: teenagers dancing, confetti**", "teenagers dancing, confetti"),
         ("Here is the prompt: rooftop party, sunset", "rooftop party, sunset"),
+        ("Here is the prompt:\nrooftop party, sunset", "rooftop party, sunset"),
         ("**bold prompt, candles**", "bold prompt, candles"),
-        ("first line, is the prompt\n\nchatty explanation", "first line, is the prompt"),
+        (
+            "first line, is the prompt\n\nchatty explanation",
+            "first line, is the prompt",
+        ),
         ("trailing period, dusk.", "trailing period, dusk"),
     ],
 )
@@ -185,6 +198,7 @@ def test_malformed_json_falls_back(settings: Settings) -> None:
         {"response": None},
         {"response": "   "},
         {"response": ""},
+        {"response": "...,,,"},
         ["not", "a", "mapping"],
     ],
 )
@@ -205,11 +219,14 @@ def test_blank_prompt_is_rejected(settings: Settings) -> None:
 
 
 def test_is_available_reflects_server_state(settings: Settings) -> None:
-    up, _ = make_enhancer(settings, FakeResponse({"models": []}))
+    up, up_session = make_enhancer(settings, FakeResponse({"models": []}))
     down, _ = make_enhancer(settings, requests.ConnectionError("refused"))
 
     assert up.is_available() is True
     assert down.is_available() is False
+    assert up_session.calls == [
+        {"url": "http://localhost:11434/api/tags", "timeout": 2.0}
+    ]
 
 
 def test_metadata_view_is_json_serialisable(settings: Settings) -> None:
@@ -241,10 +258,10 @@ def test_default_session_is_used_when_none_is_injected(
 
 
 def test_custom_host_from_settings_is_used() -> None:
-    settings = load_settings(
-        DEFAULT_CONFIG_FILE, ollama={"host": "http://gpu-box:11434/"}
+    settings = Settings(ollama=OllamaSettings(host="http://gpu-box:11434"))
+    enhancer, session = make_enhancer(
+        settings, FakeResponse({"response": MODEL_OUTPUT})
     )
-    enhancer, session = make_enhancer(settings, FakeResponse({"response": MODEL_OUTPUT}))
 
     enhancer.enhance(USER_PROMPT)
 

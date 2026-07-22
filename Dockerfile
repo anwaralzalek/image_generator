@@ -6,7 +6,7 @@
 # CUDA-enabled torch wheels provide the CUDA runtime libraries; NVIDIA
 # Container Toolkit injects the host driver when the container starts.
 #
-# Model weights are never baked in. Mount them at /models.
+# Model weights are not baked in; the Compose hf-cache volume stores them.
 
 ARG PYTHON_VERSION=3.10
 FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime

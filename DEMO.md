@@ -48,7 +48,7 @@ ollama run llama3.2:3b "say ok"
 
 # 2. Everything the app needs, in one line
 animegen info
-#    -> checkpoint : ...\models\DreamShaperXL_v2_Turbo.safetensors (found)
+#    -> lists best, balanced, and fast with INT8 weights
 #    -> ollama     : http://localhost:11434 (llama3.2:3b) up
 
 # 3. GPU is idle (close browsers, Discord, other CUDA apps first)
@@ -56,11 +56,11 @@ nvidia-smi
 #    -> < 500 MB used, nothing big in the process list
 
 # 4. Full dry run with the real prompt, warmed up
-animegen generate "American teenagers having fun at a party" --seed 1234 --warmup
-#    -> an image in outputs/, ~6 s after the warmup completes
+animegen generate "American teenagers having fun at a party" --model balanced --seed 1234 --warmup
+#    -> an image in outputs/; note the measured time printed by the CLI
 
 # 5. Fallback path still works (pretend Ollama is dead)
-animegen generate "American teenagers having fun at a party" --no-llm --seed 1234
+animegen generate "American teenagers having fun at a party" --model balanced --no-llm --seed 1234
 #    -> renders fine, prints "LLM: skipped (--no-llm)"
 ```
 
@@ -106,7 +106,7 @@ twice.
 ### Take 1 — the CLI, showing the LLM stage (~30 s)
 
 ```bash
-animegen generate "American teenagers having fun at a party" --warmup
+animegen generate "American teenagers having fun at a party" --model balanced --warmup
 ```
 
 Talk over the warmup, then point at the output:
@@ -114,7 +114,7 @@ Talk over the warmup, then point at the output:
 - **Prompt** — what you typed.
 - **Enhanced** — what llama3.2 built from it: subjects, count, lighting, camera angle,
   clothing, plus the fixed style suffix the app owns.
-- **LLM: ok (0.6s)** — and it ran on the CPU, so the GPU was free for SDXL the whole time.
+- **LLM: ok (0.6s)** — and it ran on the CPU, so the GPU was free for the image model.
 - **seed 1234 outputs\...png** — every image is reproducible and has a JSON sidecar.
 
 ### Take 2 — the UI (~1 min)
@@ -125,17 +125,20 @@ animegen ui --warmup
 
 Open http://127.0.0.1:7860. The prompt box is already filled with the assessment prompt.
 
-1. Set **Images** to 2, leave **Seed** blank, click **Generate**.
+1. Select **Balanced**, set **Images** to 2, leave **Seed** blank, and click
+   **Generate**.
 2. While it runs: the queue is single-worker — one generation at a time, because 8 GB is
    8 GB.
-3. Open **Prompt details and seeds** to show the exact prompt SDXL received and the seeds.
+3. Open **Prompt details and seeds** to show the exact prompt the image model received
+   and the seeds.
 4. Uncheck **Use LLM enhancement**, generate again, and compare: the enhancement is what
    turns a one-liner into a composed scene.
 
 ### If someone asks "why is it fast?"
 
-DreamShaper XL **v2 Turbo** at 6 steps with guidance 2.0, not 30 steps at guidance 7.5.
-The Karras-sigma DPM++ scheduler holds up at that step count.
+The balanced tier uses DreamShaper XL **v2 Turbo** at 6 steps with guidance
+2.0. For maximum anime quality, select Animagine XL 4.0 Opt; for quick drafts,
+select Dreamlike Anime 1.0. Supported linear weights use INT8 in every tier.
 
 ---
 
@@ -167,7 +170,7 @@ move outputs\*.png outputs\_takes\   &  move outputs\*.json outputs\_takes\
 #    Linux/macOS: mkdir -p outputs/_takes && mv outputs/*.png outputs/*.json outputs/_takes/
 
 # 4. Re-warm before the next take
-animegen generate "American teenagers having fun at a party" --seed 1234 --no-llm --warmup
+animegen generate "American teenagers having fun at a party" --model balanced --seed 1234 --no-llm --warmup
 ```
 
 Docker equivalent:
@@ -199,9 +202,9 @@ Checklist before restarting:
 
 | Problem | One-liner |
 |---|---|
-| OOM mid-demo | `--images 1 --size 832x1216`, close the browser, retry |
+| OOM mid-demo | `--model fast --images 1 --size 768x768`, close the browser, retry |
 | Everything is slow | you skipped `--warmup`; run it once and continue |
-| Black images | wrong VAE — `python scripts/download_models.py --skip-checkpoint` |
+| Black images | refresh the tier — `python scripts/download_models.py --model balanced --force` |
 | Ollama down | add `--no-llm` |
 | UI will not start | fall back to the CLI; same code path, same results |
 | Docker GPU error | `docker compose down`, run the local install instead — same commands without the compose prefix |

@@ -124,11 +124,13 @@ def test_dockerfile_uses_exact_pytorch_cuda_runtime_and_installs_app(
     assert "COPY config" not in dockerfile
 
 
-def test_dockerfile_uses_base_python_as_a_nonroot_user(dockerfile: str) -> None:
+def test_dockerfile_reuses_the_base_image_nonroot_user(dockerfile: str) -> None:
     for fragment in ("VIRTUAL_ENV", "python -m venv", "/opt/venv"):
         assert fragment not in dockerfile
 
-    assert "USER appuser" in dockerfile
+    assert "useradd" not in dockerfile
+    assert "chown 1000:1000 /outputs /hf-cache" in dockerfile
+    assert "USER 1000:1000" in dockerfile
 
 
 def test_dockerfile_uses_python_healthcheck_without_curl(dockerfile: str) -> None:

@@ -9,9 +9,6 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-# Kept until the stacked container refactor stops importing the project root.
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-
 LINEAR_WEIGHT_DTYPE = "int8"
 COMPUTE_DTYPE = "float16"
 QUANTIZATION_BACKEND = "quanto"

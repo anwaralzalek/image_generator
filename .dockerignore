@@ -11,6 +11,8 @@ outputs/
 
 # Host-side state that must not leak into the image
 .git/
+.agents/
+.codex/
 .gitignore
 .venv/
 venv/
@@ -19,6 +21,7 @@ env/
 .claude/
 .vscode/
 .idea/
+tests/
 
 # Python build/runtime droppings
 **/__pycache__/
@@ -33,8 +36,3 @@ dist/
 # Gradio runtime state
 .gradio/
 flagged/
-
-# Dockerfile, .dockerignore and docker-compose.yml are deliberately NOT excluded:
-# tests/test_docker.py asserts the container contract by reading them, and that
-# suite has to run inside the image too (docker compose run animegen pytest -q).
-# They are a few KB and only invalidate the final COPY layer.

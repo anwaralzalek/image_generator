@@ -24,8 +24,8 @@ app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
     help=(
-        "Generate semi-3D (2.5D) anime images locally: an Ollama model expands "
-        "your idea, DreamShaper XL v2 Turbo renders it on 8 GB of VRAM."
+        "Generate semi-3D (2.5D) anime images locally with three selectable "
+        "INT8 image-quality tiers and optional Ollama prompt enhancement."
     ),
 )
 
@@ -67,11 +67,11 @@ def parse_size(value: str, settings: Settings) -> tuple[int, int]:
         raise typer.BadParameter(
             f"'{value}': width and height must be positive multiples of 8"
         )
-    if value not in settings.generation.allowed_sizes:
+    if value.lower() not in [size.lower() for size in settings.allowed_sizes]:
         LOGGER.warning(
             "Size %s is outside the tested set %s; expect slower renders or OOM",
             value,
-            ", ".join(settings.generation.allowed_sizes),
+            ", ".join(settings.allowed_sizes),
         )
     return width, height
 
@@ -125,10 +125,15 @@ def generate(
         typer.Option("--size", help="WIDTHxHEIGHT, e.g. 832x1216 or 1024x1024."),
     ] = None,
     steps: Annotated[
-        Optional[int], typer.Option("--steps", help="Denoising steps (Turbo range 4-8).")
+        Optional[int],
+        typer.Option("--steps", help="Denoising steps (clamped to the model's tested range)."),
     ] = None,
     guidance: Annotated[
         Optional[float], typer.Option("--guidance", help="Classifier-free guidance scale.")
+    ] = None,
+    model: Annotated[
+        Optional[str],
+        typer.Option("--model", help="Image model: best, balanced, or fast."),
     ] = None,
     no_llm: Annotated[
         bool, typer.Option("--no-llm", help="Skip Ollama; render the raw prompt.")
@@ -143,12 +148,16 @@ def generate(
 ) -> None:
     """Generate images from PROMPT and save them under outputs/."""
     settings: Settings = ctx.obj or load_settings()
+    try:
+        model_key, profile = settings.image_model(model)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc), param_hint="--model") from None
     width, height = parse_size(size, settings) if size else (None, None)
 
     orchestrator = Orchestrator(settings=settings)
     if warmup:
-        typer.echo("Warming up the pipeline...")
-        orchestrator.warmup()
+        typer.echo(f"Warming up {profile.name}...")
+        orchestrator.warmup(model=model_key)
 
     result = orchestrator.run(
         prompt=prompt,
@@ -158,6 +167,7 @@ def generate(
         height=height,
         steps=steps,
         guidance=guidance,
+        model=model_key,
         use_llm=not no_llm,
     )
     _print_summary(result)
@@ -168,6 +178,13 @@ def _print_summary(result: RunResult) -> None:
     typer.echo("")
     typer.echo(f"Prompt     : {result.original_prompt}")
     typer.echo(f"Enhanced   : {result.enhanced_prompt}")
+    if result.images:
+        model_settings = result.images[0].metadata.get("settings", {})
+        typer.echo(
+            f"Model      : {model_settings.get('model', '?')} "
+            f"({model_settings.get('weight_dtype', '?')}, "
+            f"estimated {model_settings.get('estimated_render_time', '?')})"
+        )
     if not result.llm_enabled:
         typer.echo("LLM        : skipped (--no-llm)")
     elif result.used_fallback:
@@ -213,18 +230,20 @@ def info(ctx: typer.Context) -> None:
     from animegen.llm.enhancer import OllamaEnhancer
 
     settings: Settings = ctx.obj or load_settings()
-    checkpoint = settings.checkpoint_path
     ollama_up = OllamaEnhancer(settings=settings).is_available()
 
     typer.echo(f"animegen {__version__}")
-    typer.echo(f"checkpoint : {checkpoint} "
-               f"({'found' if checkpoint.is_file() else 'MISSING'})")
-    typer.echo(f"vae        : {settings.model.vae_repo}")
     typer.echo(
-        f"defaults   : {settings.generation.width}x{settings.generation.height}, "
-        f"{settings.generation.steps} steps, guidance {settings.generation.guidance_scale}, "
-        f"{settings.generation.scheduler}"
+        f"precision  : {settings.vram.weight_dtype} weights, "
+        f"{settings.vram.dtype} compute ({settings.vram.quantization_backend})"
     )
+    typer.echo("image models:")
+    for key, profile in settings.model.profiles.items():
+        marker = " (default)" if key == settings.model.default else ""
+        typer.echo(
+            f"  {key:<8} {profile.name}{marker} | {profile.quality} | "
+            f"{profile.default_size}, {profile.steps} steps | ~{profile.estimate}"
+        )
     typer.echo(
         f"ollama     : {settings.ollama.host} ({settings.ollama.model}) "
         f"{'up' if ollama_up else 'DOWN -> --no-llm fallback'}"

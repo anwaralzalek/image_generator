@@ -110,7 +110,7 @@ class Orchestrator:
         """The underlying prompt enhancer."""
         return self._enhancer
 
-    def apply_style(self, prompt: str) -> str:
+    def apply_style(self, prompt: str, model: str | None = None) -> str:
         """Append the style contract to ``prompt``.
 
         The suffix is owned here rather than by the LLM, so its wording cannot
@@ -120,18 +120,19 @@ class Orchestrator:
             prompt: An enhanced (or raw) prompt without the style suffix.
 
         Returns:
-            The prompt SDXL should receive.
+            The prompt the selected image model should receive.
         """
-        suffix = self._settings.style.suffix
+        _, profile = self._settings.image_model(model)
+        suffix = f"{self._settings.style.suffix}{profile.prompt_suffix}"
         body = prompt.strip().rstrip(",").strip()
         if suffix.strip().lstrip(",").strip().lower() in body.lower():
             # Already styled (e.g. a prompt replayed from a sidecar).
             return body
         return f"{body}{suffix}"
 
-    def warmup(self) -> None:
+    def warmup(self, model: str | None = None) -> None:
         """Load the pipeline and render a throwaway image (see :meth:`SDXLGenerator.warmup`)."""
-        self._generator.warmup()
+        self._generator.warmup(model=model)
 
     def close(self) -> None:
         """Release the pipeline and its VRAM."""
@@ -146,6 +147,7 @@ class Orchestrator:
         height: int | None = None,
         steps: int | None = None,
         guidance: float | None = None,
+        model: str | None = None,
         use_llm: bool = True,
     ) -> RunResult:
         """Enhance, render and save.
@@ -158,6 +160,7 @@ class Orchestrator:
             height: Image height; configured default when None.
             steps: Denoising steps; configured default when None.
             guidance: Guidance scale; configured default when None.
+            model: Image-model profile key; configured default when None.
             use_llm: When False, skip Ollama entirely and style the raw prompt.
 
         Returns:
@@ -172,8 +175,9 @@ class Orchestrator:
 
         run_started = time.perf_counter()
         enhancement = self._enhance(user_prompt, use_llm)
-        styled_prompt = self.apply_style(enhancement.enhanced)
-        LOGGER.info("Final SDXL prompt: %s", styled_prompt)
+        model_key, _ = self._settings.image_model(model)
+        styled_prompt = self.apply_style(enhancement.enhanced, model_key)
+        LOGGER.info("Final image-model prompt: %s", styled_prompt)
 
         sd_started = time.perf_counter()
         results = self._generator.generate(
@@ -184,6 +188,7 @@ class Orchestrator:
             height=height,
             steps=steps,
             guidance=guidance,
+            model=model_key,
         )
         sd_duration = time.perf_counter() - sd_started
 

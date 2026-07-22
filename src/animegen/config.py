@@ -4,7 +4,7 @@ All tunables live in ``config/settings.yaml``. Values can be overridden by
 environment variables using the ``ANIMEGEN_`` prefix and ``__`` as the nesting
 delimiter::
 
-    ANIMEGEN_GENERATION__STEPS=8
+    ANIMEGEN_MODEL__DEFAULT=best
     ANIMEGEN_OLLAMA__HOST=http://127.0.0.1:11434
 
 Precedence, highest first: explicit keyword arguments, environment variables,
@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import (
     BaseSettings,
     PydanticBaseSettingsSource,
@@ -119,27 +119,159 @@ class PathSettings(BaseModel):
     outputs_dir: Path = Path("outputs")
 
 
-class ModelSettings(BaseModel):
-    """Checkpoint and VAE identifiers."""
+class ModelProfile(BaseModel):
+    """One selectable image model and its recommended inference settings."""
 
-    checkpoint_filename: str = "DreamShaperXL_v2_Turbo.safetensors"
-    checkpoint_name: str = "DreamShaper XL v2 Turbo"
-    checkpoint_url: str | None = None
+    name: str
+    repo_id: str
+    variant: str | None = None
+    architecture: str
+    quality: str
+    parameter_count: str
+    estimated_seconds: tuple[int, int]
+    width: int
+    height: int
+    allowed_sizes: list[str]
+    steps: int
+    min_steps: int
+    max_steps: int
+    guidance_scale: float
+    scheduler: str
+    use_karras_sigmas: bool = False
+    quantize_diffusers: list[str] = Field(default_factory=lambda: ["unet"])
+    quantize_transformers: list[str] = Field(default_factory=lambda: ["text_encoder"])
+    prompt_suffix: str = ""
+    negative_prompt: str | None = None
+
+    @field_validator("architecture")
+    @classmethod
+    def _supported_architecture(cls, value: str) -> str:
+        if value not in {"sdxl", "sd"}:
+            raise ValueError("architecture must be 'sdxl' or 'sd'")
+        return value
+
+    @model_validator(mode="after")
+    def _valid_ranges(self) -> "ModelProfile":
+        low, high = self.estimated_seconds
+        if low <= 0 or high < low:
+            raise ValueError("estimated_seconds must be a positive (low, high) range")
+        if not self.min_steps <= self.steps <= self.max_steps:
+            raise ValueError("steps must be inside min_steps and max_steps")
+        return self
+
+    @property
+    def estimate(self) -> str:
+        """Human-readable warm-pipeline render estimate for one image."""
+        low, high = self.estimated_seconds
+        return f"{low}-{high} seconds"
+
+    @property
+    def default_size(self) -> str:
+        return f"{self.width}x{self.height}"
+
+
+def _default_model_profiles() -> dict[str, ModelProfile]:
+    """Built-in profiles used when no YAML file is available."""
+    return {
+        "best": ModelProfile(
+            name="Animagine XL 4.0 Opt",
+            repo_id="cagliostrolab/animagine-xl-4.0",
+            architecture="sdxl",
+            quality="Best quality",
+            parameter_count="3B",
+            estimated_seconds=(60, 120),
+            width=832,
+            height=1216,
+            allowed_sizes=["832x1216", "1024x1024"],
+            steps=28,
+            min_steps=25,
+            max_steps=32,
+            guidance_scale=5.0,
+            scheduler="EulerAncestralDiscreteScheduler",
+            quantize_transformers=["text_encoder", "text_encoder_2"],
+            prompt_suffix=", masterpiece, high score, great score, absurdres",
+            negative_prompt=(
+                "lowres, bad anatomy, bad hands, text, error, missing finger, "
+                "extra digits, fewer digits, cropped, worst quality, low quality, "
+                "low score, bad score, average score, signature, watermark, "
+                "username, blurry"
+            ),
+        ),
+        "balanced": ModelProfile(
+            name="DreamShaper XL v2 Turbo",
+            repo_id="Lykon/dreamshaper-xl-v2-turbo",
+            variant="fp16",
+            architecture="sdxl",
+            quality="Balanced",
+            parameter_count="3B",
+            estimated_seconds=(15, 30),
+            width=832,
+            height=1216,
+            allowed_sizes=["832x1216", "1024x1024"],
+            steps=6,
+            min_steps=4,
+            max_steps=8,
+            guidance_scale=2.0,
+            scheduler="DPMSolverMultistepScheduler",
+            use_karras_sigmas=True,
+            quantize_transformers=["text_encoder", "text_encoder_2"],
+        ),
+        "fast": ModelProfile(
+            name="Dreamlike Anime 1.0",
+            repo_id="dreamlike-art/dreamlike-anime-1.0",
+            architecture="sd",
+            quality="Fast / lowest tier",
+            parameter_count="0.9B",
+            estimated_seconds=(10, 25),
+            width=768,
+            height=768,
+            allowed_sizes=["768x768", "704x832", "832x704"],
+            steps=20,
+            min_steps=15,
+            max_steps=30,
+            guidance_scale=7.5,
+            scheduler="DPMSolverMultistepScheduler",
+            use_karras_sigmas=True,
+            prompt_suffix=", photo anime, masterpiece, high quality, absurdres",
+            negative_prompt=(
+                "simple background, duplicate, retro style, low quality, lowest "
+                "quality, bad anatomy, bad proportions, extra digits, lowres, "
+                "username, artist name, error, watermark, signature, text, jpeg "
+                "artifacts, blurry"
+            ),
+        ),
+    }
+
+
+class ModelSettings(BaseModel):
+    """Selectable image-model registry and shared SDXL VAE."""
+
+    default: str = "balanced"
     vae_repo: str = "madebyollin/sdxl-vae-fp16-fix"
+    profiles: dict[str, ModelProfile] = Field(default_factory=_default_model_profiles)
+
+    @model_validator(mode="after")
+    def _default_exists(self) -> "ModelSettings":
+        if self.default not in self.profiles:
+            choices = ", ".join(self.profiles)
+            raise ValueError(f"default model '{self.default}' is not one of: {choices}")
+        return self
+
+    def get(self, key: str | None = None) -> tuple[str, ModelProfile]:
+        """Resolve a profile key, raising a useful error for CLI/UI callers."""
+        selected = key or self.default
+        try:
+            return selected, self.profiles[selected]
+        except KeyError:
+            choices = ", ".join(self.profiles)
+            raise ValueError(
+                f"Unknown image model '{selected}'. Choose one of: {choices}"
+            ) from None
 
 
 class GenerationSettings(BaseModel):
-    """Turbo-class inference defaults."""
+    """Limits shared by every image-model profile."""
 
-    scheduler: str = "DPMSolverSinglestepScheduler"
-    use_karras_sigmas: bool = True
-    steps: int = 6
-    min_steps: int = 4
-    max_steps: int = 8
-    guidance_scale: float = 2.0
-    width: int = 832
-    height: int = 1216
-    allowed_sizes: list[str] = Field(default_factory=lambda: ["832x1216", "1024x1024"])
     images_per_run: int = 1
     max_images_per_run: int = 4
 
@@ -147,7 +279,9 @@ class GenerationSettings(BaseModel):
 class VramSettings(BaseModel):
     """8 GB VRAM strategy switches. Defaults are the supported configuration."""
 
+    weight_dtype: str = "int8"
     dtype: str = "float16"
+    quantization_backend: str = "quanto"
     enable_model_cpu_offload: bool = True
     enable_vae_tiling: bool = True
     empty_cache_after_run: bool = True
@@ -217,10 +351,19 @@ class Settings(BaseSettings):
             file_secret_settings,
         )
 
+    def image_model(self, key: str | None = None) -> tuple[str, ModelProfile]:
+        """Return the selected image model key and profile."""
+        return self.model.get(key)
+
     @property
-    def checkpoint_path(self) -> Path:
-        """Absolute path of the SDXL single-file checkpoint."""
-        return (self.paths.models_dir / self.model.checkpoint_filename).resolve()
+    def allowed_sizes(self) -> list[str]:
+        """Ordered union of the sizes supported by all model profiles."""
+        sizes: list[str] = []
+        for profile in self.model.profiles.values():
+            for size in profile.allowed_sizes:
+                if size not in sizes:
+                    sizes.append(size)
+        return sizes
 
     @property
     def outputs_dir(self) -> Path:

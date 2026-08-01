@@ -116,7 +116,9 @@ export ANIMEGEN_OLLAMA__MODEL=llama3.2:3b
 ```
 
 Docker users can copy `.env.example` to `.env` to set the default tier, host
-port, and an optional external Ollama address.
+port, an optional external Ollama address, and an optional Hugging Face read
+token. Setting `HF_TOKEN` raises Hub download rate limits; keep it in the
+gitignored `.env` file and never bake it into the image.
 
 ## Troubleshooting
 
@@ -127,7 +129,7 @@ port, and an optional external Ollama address.
 | Docker Hub DNS/proxy timeout | Fix the host or Docker DNS/HTTPS proxy |
 | CUDA is unavailable | Check `nvidia-smi`, the CUDA PyTorch build, and Docker GPU access |
 | CUDA out of memory | Close GPU apps, use one image, or choose `fast`; do not run UI and CLI together |
-| First generation is slow | The selected model is downloading/loading; later runs reuse the cache |
+| First generation is slow | The UI shows uncached model-file downloads; loading and quantization continue afterward, and later runs reuse the cache |
 | Ollama is down | Start Ollama or use `--no-llm`; image generation still works |
 
 Diagnostics:

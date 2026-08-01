@@ -52,6 +52,8 @@ services:
       ANIMEGEN_MODEL__DEFAULT: ${ANIMEGEN_MODEL__DEFAULT:-balanced}
       ANIMEGEN_PATHS__OUTPUTS_DIR: /outputs
       HF_HOME: /hf-cache
+      # Optional read token for higher Hugging Face Hub rate limits.
+      HF_TOKEN: ${HF_TOKEN:-}
     volumes:
       # Outputs are host-visible; Hugging Face model files persist separately.
       - ./outputs:/outputs

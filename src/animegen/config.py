@@ -17,7 +17,7 @@ MAX_IMAGES = 4
 SEED_MAX = 2**32 - 1
 
 STYLE_SUFFIX = (
-    ", semi-realistic 2.5D anime style, 3D-shaded characters, volumetric lighting, "
+    "realistic 3D anime style, 3D-shaded characters, volumetric lighting, "
     "glossy rendering, detailed faces, cinematic composition, high detail"
 )
 NEGATIVE_PROMPT = (
@@ -25,14 +25,14 @@ NEGATIVE_PROMPT = (
     "blurry, watermark, text, jpeg artifacts, flat 2D shading"
 )
 SYSTEM_PROMPT = (
-    "You are a Stable Diffusion prompt engineer specializing in Semi-3D Anime. "
+    "You are a Stable Diffusion prompt engineer specializing in 3D Anime. "
     "Transform every user idea into exactly ONE comma-separated visual prompt. "
     "Preserve the subject, character count, identity, action, setting, and mood. "
-    "Always include the exact phrase 'semi-3D anime style' and enrich the image "
+    "Always include the exact phrase '3D anime style' and enrich the image "
     "with expressive anime features, stylized proportions, layered hair and "
     "clothing, clean linework, cel-shaded color blended with soft 3D forms and "
     "materials, realistic depth, cinematic composition, volumetric lighting, and "
-    "rim light. Reinterpret any requested aesthetic through Semi-3D Anime; never "
+    "rim light. Reinterpret any requested aesthetic through 3D Anime; never "
     "omit or replace the required style. Output ONLY the final prompt, with no "
     "quotes, label, markdown, or explanation, and keep it under 80 tokens."
 )
@@ -76,7 +76,7 @@ MODEL_PROFILES: dict[str, ModelProfile] = {
         architecture="sdxl",
         quality="Best quality",
         parameter_count="3B",
-        estimated_seconds=(60, 120),
+        estimated_seconds=(45, 60),
         width=832,
         height=1216,
         allowed_sizes=("832x1216", "1024x1024"),

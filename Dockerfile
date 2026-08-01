@@ -22,8 +22,10 @@ WORKDIR /app
 # Install the package from the minimum files needed at runtime.
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN pip install --upgrade pip \
-    && pip install ".[ui]"
+# This image marks its Python installation as externally managed (PEP 668).
+# Installing into it is intentional here so the app reuses the bundled
+# PyTorch/CUDA runtime instead of downloading a second copy into a virtualenv.
+RUN python -m pip install --break-system-packages ".[ui]"
 
 RUN mkdir -p /outputs /hf-cache \
     && chown 1000:1000 /outputs /hf-cache

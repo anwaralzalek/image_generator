@@ -30,7 +30,7 @@ app = typer.Typer(
     add_completion=False,
     no_args_is_help=True,
     help=(
-        "Generate semi-3D (2.5D) anime images locally with three selectable "
+        "Generate 3D anime images locally with three selectable "
         "image-quality tiers, INT8 linear weights, and optional Ollama prompt "
         "enhancement."
     ),

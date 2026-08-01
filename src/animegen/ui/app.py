@@ -179,9 +179,22 @@ class DemoApp:
             model: str,
             size: str,
             use_llm: bool,
+            progress=gr.Progress(track_tqdm=True),
         ) -> tuple[list[tuple[Any, str]], str, str]:
             try:
-                return self.generate(prompt, images, seed_text, size, use_llm, model)
+                _, profile = self._settings.image_model(model)
+                progress(
+                    0,
+                    desc=(
+                        f"Checking {profile.name}; uncached model files will "
+                        "download here"
+                    ),
+                )
+                result = self.generate(
+                    prompt, images, seed_text, size, use_llm, model
+                )
+                progress(1, desc="Generation complete")
+                return result
             except (ValueError, RuntimeError, OSError) as exc:
                 raise gr.Error(str(exc)) from exc
 
@@ -190,13 +203,7 @@ class DemoApp:
                 "# Image Generator\n"
                 "Choose an image-quality tier with INT8 linear weights; "
                 "llama3.2 optionally expands "
-                "your idea on the CPU. Model use is subject to the "
-                "[SDXL Open RAIL++ license](https://huggingface.co/stabilityai/"
-                "stable-diffusion-xl-base-1.0/blob/main/LICENSE.md) and the "
-                "[fast-tier OpenRAIL license](https://huggingface.co/spaces/"
-                "CompVis/stable-diffusion-license). Optional prompt enhancement "
-                "uses the [Llama 3.2 license](https://ollama.com/library/"
-                "llama3.2:3b)."
+                "your idea on the CPU. Model use is subject to the Optional prompt enhancement"
             )
             with gr.Row():
                 with gr.Column(scale=2):
@@ -245,10 +252,18 @@ class DemoApp:
             inputs = [prompt, images, seed, model, size, use_llm]
             outputs = [gallery, details, status]
             generate_button.click(
-                on_generate, inputs=inputs, outputs=outputs, concurrency_limit=1
+                on_generate,
+                inputs=inputs,
+                outputs=outputs,
+                concurrency_limit=1,
+                show_progress="full",
             )
             prompt.submit(
-                on_generate, inputs=inputs, outputs=outputs, concurrency_limit=1
+                on_generate,
+                inputs=inputs,
+                outputs=outputs,
+                concurrency_limit=1,
+                show_progress="full",
             )
 
         demo.queue(max_size=QUEUE_MAX_SIZE, default_concurrency_limit=1)
@@ -261,5 +276,14 @@ class DemoApp:
         **launch_kwargs: Any,
     ) -> None:
         demo = self.build()
+        allowed_paths = list(launch_kwargs.pop("allowed_paths", []) or [])
+        outputs_dir = str(self._settings.outputs_dir)
+        if outputs_dir not in allowed_paths:
+            allowed_paths.append(outputs_dir)
         LOGGER.info("Serving the demo on http://%s:%d", host, port)
-        demo.launch(server_name=host, server_port=port, **launch_kwargs)
+        demo.launch(
+            server_name=host,
+            server_port=port,
+            allowed_paths=allowed_paths,
+            **launch_kwargs,
+        )

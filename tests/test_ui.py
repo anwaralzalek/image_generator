@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from pathlib import Path
 from typing import Any
 
@@ -215,3 +216,27 @@ def test_build_requires_gradio_and_wires_a_single_worker_queue(
 
     assert isinstance(blocks, gradio.Blocks)
     assert blocks.max_threads >= 1
+
+    generate_handler = next(
+        function.fn for function in blocks.fns.values() if function.name == "on_generate"
+    )
+    progress = inspect.signature(generate_handler).parameters["progress"].default
+    assert isinstance(progress, gradio.Progress)
+    assert progress.track_tqdm is True
+
+
+def test_launch_allows_gradio_to_serve_generated_images(
+    demo: DemoApp, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeBlocks:
+        launch_kwargs: dict[str, Any] = {}
+
+        def launch(self, **kwargs: Any) -> None:
+            self.launch_kwargs = kwargs
+
+    blocks = FakeBlocks()
+    monkeypatch.setattr(demo, "build", lambda: blocks)
+
+    demo.launch()
+
+    assert blocks.launch_kwargs["allowed_paths"] == [str(settings.outputs_dir)]

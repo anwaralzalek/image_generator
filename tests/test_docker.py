@@ -115,8 +115,8 @@ def test_dockerfile_uses_exact_pytorch_cuda_runtime_and_installs_app(
     assert "FROM python:" not in dockerfile
     assert "TORCH_INDEX_URL" not in dockerfile
     assert "pip install torch" not in dockerfile
-    assert "pip install --upgrade pip" in dockerfile
-    assert 'pip install ".[ui]"' in dockerfile
+    assert "pip install --upgrade pip" not in dockerfile
+    assert 'python -m pip install --break-system-packages ".[ui]"' in dockerfile
     assert "COPY pyproject.toml README.md ./" in dockerfile
     assert "--mount=type=cache" not in dockerfile
     assert "PIP_NO_CACHE_DIR=1" in dockerfile
@@ -175,5 +175,5 @@ def test_pyyaml_is_a_test_dependency_not_a_runtime_dependency() -> None:
 def test_env_example_documents_compose_variables() -> None:
     text = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
 
-    for variable in ("HOST_PORT", "ANIMEGEN_OLLAMA__HOST"):
+    for variable in ("HOST_PORT", "ANIMEGEN_OLLAMA__HOST", "HF_TOKEN"):
         assert variable in text

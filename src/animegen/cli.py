@@ -183,6 +183,31 @@ def _print_summary(result: RunResult) -> None:
 
 
 @app.command()
+def ui(
+    ctx: typer.Context,
+    host: Annotated[
+        str, typer.Option("--host", help="Interface to bind.")
+    ] = "127.0.0.1",
+    port: Annotated[int, typer.Option("--port", help="TCP port.")] = 7860,
+    share: Annotated[
+        bool, typer.Option("--share", help="Expose a public gradio.live tunnel.")
+    ] = False,
+    warmup: Annotated[
+        Optional[bool],
+        typer.Option(
+            "--warmup/--no-warmup",
+            help="Render a throwaway image at startup (default: ANIMEGEN_UI_WARMUP).",
+        ),
+    ] = None,
+) -> None:
+    """Serve the Gradio demo interface."""
+    from animegen.ui.app import DemoApp
+
+    settings: Settings = ctx.obj or load_settings()
+    DemoApp(settings=settings).launch(host=host, port=port, share=share, warmup=warmup)
+
+
+@app.command()
 def info(ctx: typer.Context) -> None:
     """Show the active configuration and whether Ollama is reachable."""
     from animegen.llm.enhancer import OllamaEnhancer

@@ -15,6 +15,9 @@ services:
   # num_gpu: 0 with every request, so this is belt and braces.
   ollama:
     image: ollama/ollama:latest
+    ports:
+      # Expose the CPU-only prompt enhancer to local Python installs too.
+      - "127.0.0.1:11434:11434"
     volumes:
       - ollama-models:/root/.ollama
     healthcheck:

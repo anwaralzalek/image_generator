@@ -118,9 +118,14 @@ def test_dockerfile_installs_cuda_torch(dockerfile: str) -> None:
     assert "pip install torch --index-url" in dockerfile
 
 
-def test_dockerfile_is_multi_stage_and_runs_unprivileged(dockerfile: str) -> None:
-    assert "AS builder" in dockerfile
+def test_dockerfile_uses_system_python_and_runs_unprivileged(
+    dockerfile: str,
+) -> None:
     assert "AS runtime" in dockerfile
+    assert "VIRTUAL_ENV" not in dockerfile
+    assert "python -m venv" not in dockerfile
+    assert "/opt/venv" not in dockerfile
+    assert 'pip install ".[dev]"' in dockerfile
     assert "USER appuser" in dockerfile
 
 

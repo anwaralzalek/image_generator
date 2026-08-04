@@ -1,0 +1,40 @@
+# Keep the build context small and the image reproducible.
+
+# Weights and generated images are volumes, never layers.
+models/
+outputs/
+*.safetensors
+*.ckpt
+*.bin
+*.pt
+*.pth
+
+# Host-side state that must not leak into the image
+.git/
+.gitignore
+.venv/
+venv/
+env/
+.env
+.claude/
+.vscode/
+.idea/
+
+# Python build/runtime droppings
+**/__pycache__/
+**/*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Gradio runtime state
+.gradio/
+flagged/
+
+# Dockerfile, .dockerignore and docker-compose.yml are deliberately NOT excluded:
+# tests/test_docker.py asserts the container contract by reading them, and that
+# suite has to run inside the image too (docker compose run animegen pytest -q).
+# They are a few KB and only invalidate the final COPY layer.

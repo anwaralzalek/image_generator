@@ -7,6 +7,35 @@ already on disk. Nothing in this runbook downloads anything.
 
 ---
 
+## Which stack are you demoing?
+
+Pick one **before** rehearsal and stay on it — the two paths hold the model in VRAM
+independently, and running both at once is an instant OOM.
+
+| | Local install | Docker |
+|---|---|---|
+| Start | `animegen ui --warmup` | `docker compose up` |
+| Ollama | host service you started | bundled container, pulled at first `up` |
+| Pre-flight | `animegen info` | `docker compose run --rm animegen info` |
+| Risk on the day | host env drift | GPU not reaching the container |
+
+The commands below are the local ones. For Docker, prefix with
+`docker compose run --rm animegen` (drop the `animegen` word itself), e.g.
+`docker compose run --rm animegen generate "..." --seed 1234`.
+
+Docker-specific pre-flight, run once at T-30:
+
+```bash
+docker compose run --rm --no-deps animegen python -c "import torch; print(torch.cuda.is_available())"
+#    -> True. False means the container has no GPU: fix it now, not on stage.
+
+docker compose up -d && docker compose ps
+#    -> ollama healthy, ollama-init exited 0, animegen running
+
+curl -s -o /dev/null -w "%{http_code}\n" http://localhost:7860/
+#    -> 200
+```
+
 ## T-30 min — pre-flight
 
 Run these in order. Each line has an expected result; if one does not match, fix it now,
@@ -141,10 +170,23 @@ move outputs\*.png outputs\_takes\   &  move outputs\*.json outputs\_takes\
 animegen generate "American teenagers having fun at a party" --seed 1234 --no-llm --warmup
 ```
 
+Docker equivalent:
+
+```bash
+docker compose down            # stops the UI and frees VRAM; volumes survive
+docker compose up -d           # back up; the llama pull is a no-op the second time
+docker compose logs -f animegen
+```
+
+`docker compose down` keeps `ollama-models` and `hf-cache`, so a restart costs seconds,
+not a re-download. Only `docker compose down -v` throws the models away — do not type
+that on demo day.
+
 Checklist before restarting:
 
 - [ ] Only one animegen process running (CLI **or** UI, never both — they each load a full
-      copy of the model into VRAM).
+      copy of the model into VRAM). With Docker this includes a stray
+      `docker compose run` container: check `docker compose ps`.
 - [ ] `nvidia-smi` shows the GPU idle.
 - [ ] Browser tabs with the old Gradio UI are closed (they hold a websocket and a
       WebGL context).
@@ -162,4 +204,6 @@ Checklist before restarting:
 | Black images | wrong VAE — `python scripts/download_models.py --skip-checkpoint` |
 | Ollama down | add `--no-llm` |
 | UI will not start | fall back to the CLI; same code path, same results |
+| Docker GPU error | `docker compose down`, run the local install instead — same commands without the compose prefix |
+| Bundled Ollama unhealthy | `docker compose restart ollama`, or just add `--no-llm` |
 | Nothing works | show `outputs/_takes/` from rehearsal and walk through a sidecar JSON |

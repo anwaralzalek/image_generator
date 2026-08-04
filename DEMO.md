@@ -144,7 +144,7 @@ The Karras-sigma DPM++ scheduler holds up at that step count.
 | What you see | What to do |
 |---|---|
 | `LLM: unavailable, used the raw prompt` | Nothing — it already fell back and rendered. Say so out loud; the fallback is the feature. |
-| First call hangs ~5 s then falls back | The model was cold. `ollama run llama3.2:3b "hi"` in another terminal, then retry. |
+| First call takes longer than usual | The model was cold. `ollama run llama3.2:3b "hi"` in another terminal, then retry. |
 | Ollama is dead and will not start | Switch to `--no-llm` for the rest of the demo and use the locked seeds; show the enhanced prompt from a rehearsal sidecar instead. |
 | Enhanced prompt is nonsense | Regenerate — it is temperature 0.7. If it repeats, `--no-llm` and move on. |
 | UI checkbox route | Uncheck **Use LLM enhancement** — same effect as `--no-llm`, no restart needed. |

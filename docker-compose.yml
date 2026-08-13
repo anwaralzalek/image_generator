@@ -1,8 +1,8 @@
-# Anime Party Generator — full stack: prompt LLM (CPU) + SDXL (GPU).
+# Anime Party Generator — prompt LLM (CPU) + selectable image model (GPU).
 #
 #   docker compose up                    # pulls llama3.2:3b, serves the UI on :7860
 #   docker compose run --rm animegen generate "American teenagers having fun at a party"
-#   docker compose run --rm animegen python scripts/download_models.py --url "<url>"
+#   docker compose run --rm animegen python scripts/download_models.py --model best
 #
 # Requires: NVIDIA driver on the host + NVIDIA Container Toolkit (Docker Desktop
 # with the WSL2 backend already ships it on Windows).
@@ -11,7 +11,7 @@ name: anime-party-generator
 
 services:
   # The prompt enhancer. Deliberately given no GPU reservation: on an 8 GB card
-  # the LLM must never compete with SDXL for VRAM. The app also sends
+  # the LLM must never compete with the image model for VRAM. The app also sends
   # num_gpu: 0 with every request, so this is belt and braces.
   ollama:
     image: ollama/ollama:latest
@@ -58,8 +58,7 @@ services:
       ANIMEGEN_UI_WARMUP: ${ANIMEGEN_UI_WARMUP:-0}
       HF_HOME: /hf-cache
     volumes:
-      # Checkpoints live on the host: a 6.5 GB layer would make the image
-      # unbuildable for anyone without the licence-gated file.
+      # Outputs are host-visible; Hugging Face model files persist separately.
       - ./models:/models
       - ./outputs:/outputs
       - hf-cache:/hf-cache

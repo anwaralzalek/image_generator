@@ -7,7 +7,7 @@
 #   docker run animegen generate "a party"       -> animegen generate "a party"
 #   docker run animegen --verbose info           -> animegen --verbose info
 #   docker run animegen pytest -q                -> pytest -q
-#   docker run animegen python scripts/download_models.py --url ...
+#   docker run animegen python scripts/download_models.py --model best
 set -euo pipefail
 
 case "${1:-ui}" in

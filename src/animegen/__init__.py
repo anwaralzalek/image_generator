@@ -1,9 +1,4 @@
-"""Anime Party Generator: local 2.5D anime image generation on 8 GB VRAM.
-
-Pipeline: a user idea is expanded by a CPU-bound Ollama model, the style
-contract is appended, and DreamShaper XL v2 Turbo renders it through
-``diffusers`` with SDXL memory optimisations.
-"""
+"""Local anime image generation with three quality tiers and INT8 linear weights."""
 
 from __future__ import annotations
 

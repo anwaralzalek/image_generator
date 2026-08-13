@@ -1,4 +1,4 @@
-"""Tests for the YAML-backed settings loader."""
+"""Tests for the lightweight environment-backed configuration."""
 
 from __future__ import annotations
 
@@ -7,181 +7,174 @@ from pathlib import Path
 import pytest
 
 from animegen.config import (
-    DEFAULT_CONFIG_FILE,
+    COMPUTE_DTYPE,
+    MAX_IMAGES,
+    MODEL_PROFILES,
+    NEGATIVE_PROMPT,
+    QUANTIZATION_BACKEND,
+    SEED_MAX,
+    STYLE_SUFFIX,
+    SYSTEM_PROMPT,
+    VAE_REPO,
+    LINEAR_WEIGHT_DTYPE,
+    OllamaSettings,
     Settings,
-    active_config_file,
     get_settings,
     load_settings,
-    reset_settings_cache,
+    parse_dimensions,
 )
-
-REPO_CONFIG = DEFAULT_CONFIG_FILE
 
 
 @pytest.fixture(autouse=True)
-def _clear_caches() -> None:
-    reset_settings_cache()
+def _clear_settings_cache() -> None:
+    get_settings.cache_clear()
     yield
-    reset_settings_cache()
+    get_settings.cache_clear()
 
 
-@pytest.fixture
-def clean_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Remove any ANIMEGEN_* variables leaking in from the developer's shell."""
-    import os
+def test_defaults_match_the_runtime_contract() -> None:
+    settings = load_settings()
 
-    for key in list(os.environ):
-        if key.startswith("ANIMEGEN_"):
-            monkeypatch.delenv(key, raising=False)
+    assert settings.default_model == "balanced"
+    assert list(settings.profiles) == ["best", "balanced", "fast"]
+    assert settings.profiles == MODEL_PROFILES
 
-
-def test_shipped_config_file_exists() -> None:
-    assert REPO_CONFIG.is_file(), "config/settings.yaml must ship with the repo"
-
-
-def test_defaults_match_the_documented_contract(clean_env: None) -> None:
-    settings = load_settings(REPO_CONFIG)
-
-    assert settings.model.default == "balanced"
-    assert list(settings.model.profiles) == ["best", "balanced", "fast"]
-    best = settings.model.profiles["best"]
-    balanced = settings.model.profiles["balanced"]
-    fast = settings.model.profiles["fast"]
-    assert best.name == "Animagine XL 4.0 Opt"
-    assert best.parameter_count == "3B"
-    assert best.steps == 28
-    assert best.estimate == "60-120 seconds"
-    assert balanced.name == "DreamShaper XL v2 Turbo"
-    assert balanced.steps == 6
-    assert fast.name == "Dreamlike Anime 1.0"
-    assert fast.default_size == "768x768"
-    assert settings.allowed_sizes == [
-        "832x1216",
-        "1024x1024",
-        "768x768",
-        "704x832",
-        "832x704",
-    ]
-    assert settings.model.vae_repo == "madebyollin/sdxl-vae-fp16-fix"
-
-    assert settings.vram.weight_dtype == "int8"
-    assert settings.vram.dtype == "float16"
-    assert settings.vram.quantization_backend == "quanto"
-    assert settings.vram.enable_model_cpu_offload is True
-    assert settings.vram.enable_vae_tiling is True
-
-    assert settings.ollama.model == "llama3.2:3b"
-    assert settings.ollama.host == "http://localhost:11434"
-    assert settings.ollama.timeout == pytest.approx(30.0)
-    assert settings.ollama.num_gpu == 0, "the LLM must stay off the GPU"
-    assert "Stable Diffusion XL prompt engineer" in settings.ollama.system_prompt
-
-
-def test_style_contract_is_verbatim(clean_env: None) -> None:
-    settings = load_settings(REPO_CONFIG)
-
-    assert settings.style.suffix == (
-        ", semi-realistic 2.5D anime style, 3D-shaded characters, volumetric lighting,"
-        " glossy rendering, detailed faces, cinematic composition, high detail"
+    best = settings.profiles["best"]
+    balanced = settings.profiles["balanced"]
+    fast = settings.profiles["fast"]
+    assert (best.name, best.parameter_count, best.steps, best.estimate) == (
+        "Animagine XL 4.0 Opt",
+        "3B",
+        28,
+        "60-120 seconds",
     )
-    assert settings.style.negative_prompt == (
-        "bad anatomy, deformed hands, extra fingers, extra limbs, mutated, lowres,"
-        " blurry, watermark, text, jpeg artifacts, flat 2D shading"
+    assert (balanced.name, balanced.steps, balanced.guidance_scale) == (
+        "DreamShaper XL v2 Turbo",
+        6,
+        pytest.approx(2.0),
+    )
+    assert (fast.name, fast.default_size, fast.architecture) == (
+        "Eimis Anime Diffusion 1.0v",
+        "768x832",
+        "sd",
     )
 
+    assert LINEAR_WEIGHT_DTYPE == "int8"
+    assert COMPUTE_DTYPE == "float16"
+    assert QUANTIZATION_BACKEND == "quanto"
+    assert VAE_REPO == "madebyollin/sdxl-vae-fp16-fix"
+    assert (MAX_IMAGES, SEED_MAX) == (4, 2**32 - 1)
 
-def test_env_var_overrides_yaml_value(
-    clean_env: None, monkeypatch: pytest.MonkeyPatch
+
+def test_prompt_constants_are_stable() -> None:
+    assert STYLE_SUFFIX == (
+        ", semi-realistic 2.5D anime style, 3D-shaded characters, volumetric lighting, "
+        "glossy rendering, detailed faces, cinematic composition, high detail"
+    )
+    assert NEGATIVE_PROMPT == (
+        "bad anatomy, deformed hands, extra fingers, extra limbs, mutated, lowres, "
+        "blurry, watermark, text, jpeg artifacts, flat 2D shading"
+    )
+    assert "Stable Diffusion prompt engineer" in SYSTEM_PROMPT
+    assert "Output ONLY the prompt" in SYSTEM_PROMPT
+
+
+def test_environment_overrides_supported_runtime_values(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     monkeypatch.setenv("ANIMEGEN_MODEL__DEFAULT", "best")
-    monkeypatch.setenv("ANIMEGEN_OLLAMA__HOST", "http://192.168.1.5:11434/")
+    monkeypatch.setenv("ANIMEGEN_PATHS__OUTPUTS_DIR", str(tmp_path / "renders"))
+    monkeypatch.setenv("ANIMEGEN_OLLAMA__HOST", "http://gpu-box:11434/")
+    monkeypatch.setenv("ANIMEGEN_OLLAMA__MODEL", "llama3.2:1b")
+    monkeypatch.setenv("ANIMEGEN_OLLAMA__TIMEOUT", "12.5")
+    monkeypatch.setenv("ANIMEGEN_OLLAMA__TEMPERATURE", "0.25")
 
-    settings = load_settings(REPO_CONFIG)
+    settings = load_settings()
 
-    assert settings.model.default == "best"
-    assert settings.ollama.host == "http://192.168.1.5:11434"
-    # Untouched sibling keys still come from the YAML file.
-    assert settings.model.profiles["balanced"].guidance_scale == pytest.approx(2.0)
-    assert settings.ollama.model == "llama3.2:3b"
-
-
-def test_keyword_overrides_beat_environment(
-    clean_env: None, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    monkeypatch.setenv("ANIMEGEN_MODEL__DEFAULT", "best")
-
-    settings = load_settings(REPO_CONFIG, model={"default": "fast"})
-
-    assert settings.model.default == "fast"
-
-
-def test_custom_config_file_is_read(clean_env: None, tmp_path: Path) -> None:
-    config_file = tmp_path / "custom.yaml"
-    config_file.write_text(
-        "model:\n  default: best\ngeneration:\n  max_images_per_run: 2\n",
-        encoding="utf-8",
+    assert settings.default_model == "best"
+    assert settings.outputs_dir == (tmp_path / "renders").resolve()
+    assert settings.ollama == OllamaSettings(
+        host="http://gpu-box:11434",
+        model="llama3.2:1b",
+        timeout=12.5,
+        temperature=0.25,
     )
-
-    settings = load_settings(config_file)
-
-    assert settings.model.default == "best"
-    assert settings.generation.max_images_per_run == 2
-    # Profiles absent from the custom file fall back to in-code defaults.
-    assert settings.model.profiles["balanced"].steps == 6
+    assert settings.ollama.generate_url == "http://gpu-box:11434/api/generate"
 
 
-def test_config_file_env_var_selects_the_file(
-    clean_env: None, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize(
+    ("name", "value", "message"),
+    [
+        ("ANIMEGEN_OLLAMA__TIMEOUT", "0", "positive finite"),
+        ("ANIMEGEN_OLLAMA__TIMEOUT", "nan", "positive finite"),
+        ("ANIMEGEN_OLLAMA__TEMPERATURE", "-0.1", "non-negative"),
+        ("ANIMEGEN_OLLAMA__TEMPERATURE", "inf", "finite"),
+        ("ANIMEGEN_OLLAMA__TIMEOUT", "not-a-number", "could not convert"),
+    ],
+)
+def test_invalid_numeric_environment_values_raise(
+    monkeypatch: pytest.MonkeyPatch, name: str, value: str, message: str
 ) -> None:
-    config_file = tmp_path / "from_env.yaml"
-    config_file.write_text("ollama:\n  model: llama3.2:1b\n", encoding="utf-8")
-    monkeypatch.setenv("ANIMEGEN_CONFIG_FILE", str(config_file))
+    monkeypatch.setenv(name, value)
 
-    assert active_config_file() == config_file
-    assert load_settings().ollama.model == "llama3.2:1b"
+    with pytest.raises(ValueError, match=message):
+        load_settings()
 
 
-def test_missing_config_file_falls_back_to_defaults(
-    clean_env: None, tmp_path: Path
+def test_unknown_default_model_from_environment_lists_choices(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    settings = load_settings(tmp_path / "does-not-exist.yaml")
-
-    assert settings.model.default == "balanced"
-    assert settings.style.negative_prompt.startswith("bad anatomy")
-
-
-def test_malformed_config_file_raises(clean_env: None, tmp_path: Path) -> None:
-    config_file = tmp_path / "bad.yaml"
-    config_file.write_text("- not\n- a mapping\n", encoding="utf-8")
-
-    with pytest.raises(TypeError):
-        load_settings(config_file)
-
-
-def test_derived_paths_and_urls(clean_env: None, tmp_path: Path) -> None:
-    settings = load_settings(
-        REPO_CONFIG,
-        paths={"models_dir": tmp_path / "m", "outputs_dir": tmp_path / "o"},
-    )
-
-    assert settings.paths.models_dir == tmp_path / "m"
-    assert settings.outputs_dir == tmp_path / "o"
-    assert settings.ollama.generate_url == "http://localhost:11434/api/generate"
-
-
-def test_unknown_image_model_lists_valid_choices(clean_env: None) -> None:
-    settings = load_settings(REPO_CONFIG)
+    monkeypatch.setenv("ANIMEGEN_MODEL__DEFAULT", "unknown")
 
     with pytest.raises(ValueError, match="best, balanced, fast"):
-        settings.image_model("unknown")
+        load_settings()
 
 
-def test_get_settings_is_cached(clean_env: None) -> None:
+def test_invalid_ollama_host_fails_fast(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ANIMEGEN_OLLAMA__HOST", "localhost:11434")
+
+    with pytest.raises(ValueError, match="http"):
+        load_settings()
+
+
+def test_settings_normalise_output_path(tmp_path: Path) -> None:
+    settings = Settings(outputs_dir=tmp_path / "nested" / ".." / "renders")
+
+    assert settings.outputs_dir == (tmp_path / "renders").resolve()
+
+
+def test_image_model_selection_and_validation() -> None:
+    settings = Settings(default_model="fast")
+
+    assert settings.image_model() == ("fast", MODEL_PROFILES["fast"])
+    assert settings.image_model("best") == ("best", MODEL_PROFILES["best"])
+    for unknown in ("", "unknown"):
+        with pytest.raises(ValueError, match="best, balanced, fast"):
+            settings.image_model(unknown)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("832x1216", (832, 1216)), (" 1024 X 1024 ", (1024, 1024))],
+)
+def test_parse_dimensions(raw: str, expected: tuple[int, int]) -> None:
+    assert parse_dimensions(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["", "1024", "x1024", "1024x", "abcx1024", "0x1024", "801x1024"],
+)
+def test_parse_dimensions_rejects_invalid_values(raw: str) -> None:
+    with pytest.raises(ValueError):
+        parse_dimensions(raw)
+
+
+def test_get_settings_is_cached() -> None:
     first = get_settings()
-    second = get_settings()
 
-    assert first is second
+    assert get_settings() is first
     assert isinstance(first, Settings)
 
-    reset_settings_cache()
+    get_settings.cache_clear()
     assert get_settings() is not first

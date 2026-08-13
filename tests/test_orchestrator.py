@@ -6,21 +6,16 @@ import json
 import re
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
-from animegen.config import DEFAULT_CONFIG_FILE, Settings, load_settings
+from animegen.config import NEGATIVE_PROMPT, STYLE_SUFFIX, LINEAR_WEIGHT_DTYPE, Settings
 from animegen.core.orchestrator import Orchestrator, RunResult
 from animegen.llm.enhancer import EnhancedPrompt
 from animegen.sd.pipeline import GenerationResult
 
 USER_PROMPT = "American teenagers having fun at a party"
 LLM_OUTPUT = "six american teenagers dancing, house party, string lights, low angle"
-STYLE_SUFFIX = (
-    ", semi-realistic 2.5D anime style, 3D-shaded characters, volumetric lighting,"
-    " glossy rendering, detailed faces, cinematic composition, high detail"
-)
 
 
 class FakeImage:
@@ -36,13 +31,11 @@ class FakeImage:
 
 
 class FakeGenerator:
-    """Stand-in for SDXLGenerator recording calls and replaying results."""
+    """Stand-in for ImageGenerator recording calls and replaying results."""
 
     def __init__(self, settings: Settings) -> None:
         self._settings = settings
         self.calls: list[dict[str, Any]] = []
-        self.warmup = MagicMock(name="warmup")
-        self.unload = MagicMock(name="unload")
 
     def generate(self, **kwargs: Any) -> list[GenerationResult]:
         self.calls.append(kwargs)
@@ -55,21 +48,25 @@ class FakeGenerator:
                 image=FakeImage(f"img{index}"),
                 seed=base_seed + index,
                 settings={
-                    "prompt": kwargs["prompt"],
-                    "negative_prompt": (
-                        profile.negative_prompt
-                        or self._settings.style.negative_prompt
-                    ),
-                    "width": kwargs.get("width") or profile.width,
-                    "height": kwargs.get("height") or profile.height,
-                    "steps": kwargs.get("steps") or profile.steps,
+                    "negative_prompt": (profile.negative_prompt or NEGATIVE_PROMPT),
+                    "width": profile.width
+                    if kwargs.get("width") is None
+                    else kwargs["width"],
+                    "height": profile.height
+                    if kwargs.get("height") is None
+                    else kwargs["height"],
+                    "steps": profile.steps
+                    if kwargs.get("steps") is None
+                    else kwargs["steps"],
                     "guidance_scale": (
-                        kwargs.get("guidance") or profile.guidance_scale
+                        profile.guidance_scale
+                        if kwargs.get("guidance") is None
+                        else kwargs["guidance"]
                     ),
                     "scheduler": profile.scheduler,
                     "model_key": model_key,
                     "model": profile.name,
-                    "weight_dtype": self._settings.vram.weight_dtype,
+                    "linear_weight_dtype": LINEAR_WEIGHT_DTYPE,
                     "estimated_render_time": profile.estimate,
                 },
                 duration_s=1.5,
@@ -103,10 +100,7 @@ class FakeEnhancer:
 
 @pytest.fixture
 def settings(tmp_path: Path) -> Settings:
-    return load_settings(
-        DEFAULT_CONFIG_FILE,
-        paths={"models_dir": tmp_path / "models", "outputs_dir": tmp_path / "outputs"},
-    )
+    return Settings(outputs_dir=tmp_path / "outputs")
 
 
 @pytest.fixture
@@ -148,6 +142,9 @@ def test_style_suffix_is_not_duplicated(orchestrator: Orchestrator) -> None:
 
     assert orchestrator.apply_style(already_styled) == already_styled
 
+    best_styled = orchestrator.apply_style(LLM_OUTPUT, "best")
+    assert orchestrator.apply_style(best_styled, "balanced") == best_styled
+
 
 def test_style_application_avoids_double_commas(orchestrator: Orchestrator) -> None:
     assert orchestrator.apply_style("teenagers dancing,") == (
@@ -160,13 +157,16 @@ def test_filenames_follow_the_timestamp_seed_convention(
 ) -> None:
     result = orchestrator.run(USER_PROMPT, seed=1234, images=2)
 
-    assert [path.name for path in result.paths] == [
+    paths = [image.path for image in result.images]
+    assert [path.name for path in paths] == [
         path.name for path in sorted(settings.outputs_dir.glob("*.png"))
     ]
     for image in result.images:
-        assert re.fullmatch(r"\d{8}_\d{6}_seed\d+\.png", image.path.name), image.path
+        assert re.fullmatch(
+            r"\d{8}_\d{6}_seed\d+_[0-9a-f]{32}\.png", image.path.name
+        ), image.path
         assert image.path.parent == settings.outputs_dir
-        assert image.path.name.endswith(f"seed{image.seed}.png")
+        assert f"seed{image.seed}_" in image.path.name
         assert image.path.is_file()
 
 
@@ -182,7 +182,7 @@ def test_sidecar_records_prompts_settings_and_timings(
     orchestrator: Orchestrator,
 ) -> None:
     result = orchestrator.run(USER_PROMPT, seed=1234, steps=8, guidance=3.0)
-    metadata = read_sidecar(result.paths[0])
+    metadata = read_sidecar(result.images[0].path)
 
     assert metadata["original_prompt"] == USER_PROMPT
     assert metadata["enhanced_prompt"] == LLM_OUTPUT
@@ -205,14 +205,16 @@ def test_sidecar_records_prompts_settings_and_timings(
 def test_sidecar_is_valid_json_for_every_image(orchestrator: Orchestrator) -> None:
     result = orchestrator.run(USER_PROMPT, seed=7, images=2)
 
-    seeds = [read_sidecar(path)["seed"] for path in result.paths]
-    indices = [read_sidecar(path)["index"] for path in result.paths]
+    seeds = [read_sidecar(image.path)["seed"] for image in result.images]
+    indices = [read_sidecar(image.path)["index"] for image in result.images]
 
     assert seeds == [7, 8]
     assert indices == [0, 1]
 
 
-def test_fallback_flag_is_recorded(settings: Settings, generator: FakeGenerator) -> None:
+def test_fallback_flag_is_recorded(
+    settings: Settings, generator: FakeGenerator
+) -> None:
     fallback = EnhancedPrompt(
         original=USER_PROMPT,
         enhanced=USER_PROMPT,
@@ -227,7 +229,7 @@ def test_fallback_flag_is_recorded(settings: Settings, generator: FakeGenerator)
     )
 
     result = orchestrator.run(USER_PROMPT, seed=1)
-    metadata = read_sidecar(result.paths[0])
+    metadata = read_sidecar(result.images[0].path)
 
     assert result.used_fallback is True
     assert result.enhanced_prompt == USER_PROMPT + STYLE_SUFFIX
@@ -240,7 +242,7 @@ def test_no_llm_path_skips_the_enhancer_entirely(
     orchestrator: Orchestrator, enhancer: FakeEnhancer, generator: FakeGenerator
 ) -> None:
     result = orchestrator.run(USER_PROMPT, seed=1, use_llm=False)
-    metadata = read_sidecar(result.paths[0])
+    metadata = read_sidecar(result.images[0].path)
 
     assert enhancer.calls == [], "Ollama must not be contacted with use_llm=False"
     assert result.llm_enabled is False
@@ -297,27 +299,47 @@ def test_outputs_directory_is_created_on_demand(
     assert settings.outputs_dir.is_dir()
 
 
+def test_invalid_output_path_fails_before_generation(
+    orchestrator: Orchestrator,
+    settings: Settings,
+    enhancer: FakeEnhancer,
+    generator: FakeGenerator,
+) -> None:
+    settings.outputs_dir.write_text("not a directory", encoding="utf-8")
+
+    with pytest.raises(OSError):
+        orchestrator.run(USER_PROMPT)
+
+    assert enhancer.calls == []
+    assert generator.calls == []
+
+
+def test_sidecar_failure_removes_partial_output(
+    orchestrator: Orchestrator,
+    settings: Settings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def fail_write(*_args: Any, **_kwargs: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(Path, "write_text", fail_write)
+
+    with pytest.raises(OSError, match="disk full"):
+        orchestrator.run(USER_PROMPT, seed=1)
+
+    assert not list(settings.outputs_dir.iterdir())
+
+
 def test_existing_filename_is_not_overwritten(
     orchestrator: Orchestrator, settings: Settings
 ) -> None:
-    first = orchestrator.run(USER_PROMPT, seed=1234).paths[0]
-    second = orchestrator.run(USER_PROMPT, seed=1234).paths[0]
+    first = orchestrator.run(USER_PROMPT, seed=1234).images[0].path
+    second = orchestrator.run(USER_PROMPT, seed=1234).images[0].path
 
     assert first != second
     assert first.is_file() and second.is_file()
-    assert second.stem.endswith("_2")
 
 
 def test_blank_prompt_is_rejected(orchestrator: Orchestrator) -> None:
     with pytest.raises(ValueError, match="must not be empty"):
         orchestrator.run("   ")
-
-
-def test_warmup_and_close_delegate_to_the_generator(
-    orchestrator: Orchestrator, generator: FakeGenerator
-) -> None:
-    orchestrator.warmup()
-    orchestrator.close()
-
-    generator.warmup.assert_called_once_with(model=None)
-    generator.unload.assert_called_once_with()

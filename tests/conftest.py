@@ -1,11 +1,4 @@
-"""Shared test fixtures.
-
-The container image and docker-compose both export ANIMEGEN_* variables
-(ANIMEGEN_OLLAMA__HOST, ANIMEGEN_PATHS__*, ANIMEGEN_CONFIG_FILE). Those beat
-settings.yaml by design, which means a suite that reads ambient configuration
-would pass on a laptop and fail inside the container. Every test therefore
-starts from a clean environment and opts in to whatever it needs.
-"""
+"""Keep ambient ANIMEGEN_* variables out of unit tests."""
 
 from __future__ import annotations
 

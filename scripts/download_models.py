@@ -1,22 +1,9 @@
 #!/usr/bin/env python3
-"""Pre-download every weight the generator needs.
+"""Pre-download the three image-model profiles into the Hugging Face cache.
 
-A live demo must never hit the network: run this once, ahead of time.
-
-Two artefacts are fetched:
-
-1. The DreamShaper XL v2 Turbo single-file checkpoint (~6.5 GB) into ``models/``.
-   No URL is hardcoded -- Civitai downloads may require an account token and the
-   links rotate -- so pass ``--url`` (or set ``model.checkpoint_url`` in
-   ``config/settings.yaml``). If the fetch fails, manual instructions are printed.
-2. The ``madebyollin/sdxl-vae-fp16-fix`` VAE, pulled into the Hugging Face cache.
-
-The script is idempotent: existing files are skipped unless ``--force`` is given.
-
-Usage:
-    python scripts/download_models.py --url https://example.com/dreamshaper.safetensors
-    python scripts/download_models.py --url "https://civitai.com/api/download/models/XXXX" --token $CIVITAI_TOKEN
-    python scripts/download_models.py --skip-checkpoint   # VAE only
+The repositories publish ordinary fp16/fp32 source weights. AnimeGen converts
+the supported denoiser and text-encoder linear weights to INT8 with Quanto when
+it loads a profile; the source cache is shared by local and Docker runs.
 """
 
 from __future__ import annotations
@@ -27,214 +14,147 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from animegen.config import Settings, load_settings
-except ModuleNotFoundError:  # running from a clone without `pip install -e .`
+    from animegen.config import ModelProfile, Settings, load_settings
+except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
-    from animegen.config import Settings, load_settings
-
-CHUNK_SIZE = 1024 * 1024
-MIN_PLAUSIBLE_CHECKPOINT_BYTES = 100 * 1024 * 1024
+    from animegen.config import ModelProfile, Settings, load_settings
 
 
-def human(num_bytes: float) -> str:
-    """Render a byte count as a short human-readable string."""
-    for unit in ("B", "KB", "MB", "GB"):
-        if num_bytes < 1024 or unit == "GB":
-            return f"{num_bytes:.1f}{unit}"
-        num_bytes /= 1024
-    return f"{num_bytes:.1f}GB"
+COMPONENT_PATTERNS = [
+    "model_index.json",
+    "scheduler/*",
+    "feature_extractor/*",
+    "safety_checker/*",
+    "tokenizer/*",
+    "tokenizer_2/*",
+    "tokenizer_3/*",
+    "text_encoder/*",
+    "text_encoder_2/*",
+    "text_encoder_3/*",
+    "unet/*",
+    "vae/*",
+]
 
 
-def manual_instructions(destination: Path, reason: str) -> str:
-    """Build the copy-pasteable fallback shown when an automatic fetch fails."""
-    return "\n".join(
-        [
-            "",
-            "=" * 72,
-            f"Automatic checkpoint download failed: {reason}",
-            "",
-            "Download DreamShaper XL v2 Turbo manually instead:",
-            "  1. Open https://civitai.com/models/112902 (DreamShaper XL)",
-            "     and pick the 'v2 Turbo DPM++ SDE' .safetensors file,",
-            "     or use a Hugging Face mirror such as",
-            "     https://huggingface.co/Lykon/dreamshaper-xl-v2-turbo",
-            "  2. Log in if the site asks for it (Civitai gates some downloads).",
-            f"  3. Save the file as:  {destination}",
-            "  4. Re-run this script to fetch the VAE:",
-            "     python scripts/download_models.py --skip-checkpoint",
-            "",
-            "Civitai API tokens work too:",
-            "  python scripts/download_models.py --url <api-download-url> --token <token>",
-            "=" * 72,
-            "",
-        ]
-    )
-
-
-def download_file(url: str, destination: Path, token: str | None = None) -> None:
-    """Stream ``url`` to ``destination`` with a progress line.
-
-    The download lands in a ``.part`` file and is renamed only on success, so an
-    interrupted run never leaves a truncated checkpoint that loads as garbage.
-
-    Raises:
-        RuntimeError: If the response is too small to be a real checkpoint.
-    """
-    import requests
-
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    part_file = destination.with_suffix(destination.suffix + ".part")
-    destination.parent.mkdir(parents=True, exist_ok=True)
-
-    with requests.get(url, stream=True, timeout=30, headers=headers) as response:
-        response.raise_for_status()
-        total = int(response.headers.get("content-length", 0))
-        if total and total < MIN_PLAUSIBLE_CHECKPOINT_BYTES:
-            raise RuntimeError(
-                f"response is only {human(total)}; the URL probably returned an "
-                "HTML login page rather than the checkpoint"
-            )
-
-        downloaded = 0
-        with part_file.open("wb") as handle:
-            for chunk in response.iter_content(chunk_size=CHUNK_SIZE):
-                if not chunk:
-                    continue
-                handle.write(chunk)
-                downloaded += len(chunk)
-                if total:
-                    pct = 100 * downloaded / total
-                    print(
-                        f"\r  {human(downloaded)} / {human(total)} ({pct:5.1f}%)",
-                        end="",
-                        flush=True,
-                    )
-                else:
-                    print(f"\r  {human(downloaded)}", end="", flush=True)
-        print()
-
-    part_file.replace(destination)
-
-
-def fetch_checkpoint(settings: Settings, args: argparse.Namespace) -> bool:
-    """Download the SDXL checkpoint. Returns True when it is present afterwards."""
-    models_dir = Path(args.models_dir) if args.models_dir else settings.paths.models_dir
-    destination = (models_dir / settings.model.checkpoint_filename).resolve()
-
-    if destination.is_file() and not args.force:
-        print(f"[skip] checkpoint already present: {destination} "
-              f"({human(destination.stat().st_size)})")
-        return True
-
-    url = args.url or settings.model.checkpoint_url
-    if not url:
-        print(manual_instructions(destination, "no --url given and no checkpoint_url in settings"))
-        return False
-
-    print(f"[get ] checkpoint -> {destination}")
-    try:
-        download_file(url, destination, token=args.token)
-    except Exception as exc:  # noqa: BLE001 - any failure ends in manual instructions
-        print(manual_instructions(destination, f"{type(exc).__name__}: {exc}"))
-        return False
-
-    print(f"[ok  ] checkpoint saved ({human(destination.stat().st_size)})")
-    return True
-
-
-def fetch_vae(settings: Settings, args: argparse.Namespace) -> bool:
-    """Pull the fp16-fix VAE into the Hugging Face cache. Returns True on success."""
-    repo = settings.model.vae_repo
-    print(f"[get ] VAE {repo}")
-    try:
-        from huggingface_hub import snapshot_download
-    except ModuleNotFoundError:
-        print("[fail] huggingface_hub is not installed; run: pip install -e .")
-        return False
-
-    kwargs: dict[str, Any] = {
-        "repo_id": repo,
-        "allow_patterns": ["*.json", "*.safetensors"],
+def _ignore_patterns(profile: ModelProfile) -> list[str]:
+    """Avoid duplicate root checkpoints and unused full-precision variants."""
+    root_checkpoints = {
+        "cagliostrolab/animagine-xl-4.0": [
+            "animagine-xl-4.0.safetensors",
+            "animagine-xl-4.0-opt.safetensors",
+        ],
+        "Lykon/dreamshaper-xl-v2-turbo": [
+            "DreamShaperXL_Turbo_V2-SFW.safetensors",
+            "DreamShaperXL_Turbo_v2.safetensors",
+            "DreamShaperXL_Turbo_v2_1.safetensors",
+        ],
+        "dreamlike-art/dreamlike-anime-1.0": [
+            "dreamlike-anime-1.0.ckpt",
+            "dreamlike-anime-1.0.safetensors",
+        ],
     }
-    if args.force:
+    ignored = list(root_checkpoints.get(profile.repo_id, []))
+    # Component SafeTensors are required; legacy pickle files are both unsafe
+    # and incompatible with the supported CUDA 12.1 PyTorch build.
+    ignored.extend(["*.bin", "*.ckpt"])
+    if profile.variant == "fp16":
+        ignored.extend(
+            [
+                "unet/diffusion_pytorch_model.safetensors",
+                "vae/diffusion_pytorch_model.safetensors",
+                "text_encoder/model.safetensors",
+                "text_encoder_2/model.safetensors",
+            ]
+        )
+    return ignored
+
+
+def fetch_profile(
+    key: str, profile: ModelProfile, token: str | None, force: bool
+) -> bool:
+    """Cache one Diffusers repository without redundant single-file weights."""
+    from huggingface_hub import snapshot_download
+
+    print(
+        f"[get ] {key}: {profile.name} ({profile.repo_id}; "
+        f"estimated {profile.estimate})"
+    )
+    kwargs: dict[str, Any] = {
+        "repo_id": profile.repo_id,
+        "allow_patterns": COMPONENT_PATTERNS,
+        "ignore_patterns": _ignore_patterns(profile),
+        "token": token,
+    }
+    if force:
         kwargs["force_download"] = True
     try:
         path = snapshot_download(**kwargs)
-    except Exception as exc:  # noqa: BLE001 - report and let the caller decide
-        print(f"[fail] could not download {repo}: {type(exc).__name__}: {exc}")
-        print("       Check your network, then re-run with --skip-checkpoint.")
+    except Exception as exc:  # noqa: BLE001 - report every failed profile
+        print(f"[fail] {profile.repo_id}: {type(exc).__name__}: {exc}")
         return False
+    print(f"[ok  ] cached at {path}")
+    return True
 
-    print(f"[ok  ] VAE cached at {path}")
+
+def fetch_vae(settings: Settings, token: str | None, force: bool) -> bool:
+    """Cache the stable fp16 SDXL VAE shared by best and balanced profiles."""
+    from huggingface_hub import snapshot_download
+
+    repo = settings.model.vae_repo
+    print(f"[get ] shared SDXL VAE: {repo}")
+    kwargs: dict[str, Any] = {
+        "repo_id": repo,
+        "allow_patterns": ["*.json", "*.safetensors"],
+        "token": token,
+    }
+    if force:
+        kwargs["force_download"] = True
+    try:
+        path = snapshot_download(**kwargs)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[fail] {repo}: {type(exc).__name__}: {exc}")
+        return False
+    print(f"[ok  ] cached at {path}")
     return True
 
 
 def build_parser() -> argparse.ArgumentParser:
-    """Build the command-line parser."""
     parser = argparse.ArgumentParser(
         prog="download_models.py",
-        description=(
-            "Pre-download the DreamShaper XL v2 Turbo checkpoint and the "
-            "fp16-fix VAE so the demo never downloads live."
-        ),
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=(
-            "examples:\n"
-            "  python scripts/download_models.py --url https://host/dreamshaper.safetensors\n"
-            "  python scripts/download_models.py --skip-checkpoint\n"
-        ),
+        description="Pre-download one or all INT8 runtime image-model profiles.",
     )
     parser.add_argument(
-        "--url",
-        "--source",
-        dest="url",
-        help="Direct download URL for the checkpoint (overrides model.checkpoint_url).",
+        "--model",
+        action="append",
+        choices=["all", "best", "balanced", "fast"],
+        help="Profile to download; repeat as needed (default: all).",
     )
-    parser.add_argument(
-        "--token",
-        help="Bearer token for gated hosts such as Civitai.",
-    )
-    parser.add_argument(
-        "--models-dir",
-        help="Destination directory for the checkpoint (default: paths.models_dir).",
-    )
-    parser.add_argument(
-        "--config",
-        help="Settings file to read (default: config/settings.yaml).",
-    )
-    parser.add_argument(
-        "--skip-checkpoint",
-        action="store_true",
-        help="Do not fetch the checkpoint; only pull the VAE.",
-    )
-    parser.add_argument(
-        "--skip-vae",
-        action="store_true",
-        help="Do not fetch the VAE; only get the checkpoint.",
-    )
-    parser.add_argument(
-        "--force",
-        action="store_true",
-        help="Re-download even if the files already exist.",
-    )
+    parser.add_argument("--token", help="Hugging Face token for gated repositories.")
+    parser.add_argument("--config", help="Settings file (default: config/settings.yaml).")
+    parser.add_argument("--skip-vae", action="store_true", help="Skip the shared SDXL VAE.")
+    parser.add_argument("--force", action="store_true", help="Re-download cached files.")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Entry point. Returns a process exit code."""
     args = build_parser().parse_args(argv)
     settings = load_settings(args.config) if args.config else load_settings()
+    requested = args.model or ["all"]
+    keys = list(settings.model.profiles) if "all" in requested else requested
 
     ok = True
-    if not args.skip_checkpoint:
-        ok &= fetch_checkpoint(settings, args)
-    if not args.skip_vae:
-        ok &= fetch_vae(settings, args)
+    for key in keys:
+        _, profile = settings.image_model(key)
+        ok &= fetch_profile(key, profile, args.token, args.force)
+    if not args.skip_vae and any(
+        settings.image_model(key)[1].architecture == "sdxl" for key in keys
+    ):
+        ok &= fetch_vae(settings, args.token, args.force)
 
     if ok:
-        print("\nAll model files are in place. Next: animegen generate \"...\"")
+        print("\nModels cached. Runtime loading enforces INT8 weight quantization.")
         return 0
-    print("\nSome downloads did not complete; see the instructions above.")
+    print("\nOne or more model downloads failed.")
     return 1
 
 

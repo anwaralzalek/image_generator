@@ -7,7 +7,7 @@ audience sees on screen is exactly what ``animegen generate`` produces.
 Two constraints shape this module:
 
 * **8 GB of VRAM**: the queue runs a single worker and a lock serialises
-  generations, because two concurrent SDXL runs OOM the card instantly.
+  generations, because two concurrent image pipelines OOM the card instantly.
 * **Demo latency**: the pipeline is loaded once at startup (optionally with a
   warmup render, toggled by ``ANIMEGEN_UI_WARMUP``) rather than on the first
   click.
@@ -105,7 +105,7 @@ class DemoApp:
     ) -> None:
         self._settings: Settings = settings or get_settings()
         self._orchestrator = orchestrator or Orchestrator(settings=self._settings)
-        # SDXL on 8 GB tolerates exactly one run at a time.
+        # An 8 GB GPU tolerates exactly one image pipeline at a time.
         self._lock = threading.Lock()
 
     @property
@@ -121,7 +121,7 @@ class DemoApp:
     def startup(self, warmup: bool | None = None) -> None:
         """Load the pipeline before the first click.
 
-        A failure here (missing checkpoint, no GPU) is logged rather than
+        A failure here (download issue, no GPU) is logged rather than
         raised: the UI still starts and reports the error on first use, which
         beats a dead terminal five minutes before a demo.
 
@@ -149,8 +149,9 @@ class DemoApp:
         prompt: str,
         images: int = 1,
         seed_text: str = "",
-        size: str = "832x1216",
+        size: str | None = None,
         use_llm: bool = True,
+        model: str | None = None,
     ) -> tuple[list[tuple[Any, str]], str, str]:
         """Run one generation and format it for the widgets.
 
@@ -158,8 +159,9 @@ class DemoApp:
             prompt: Prompt textbox content.
             images: Image-count slider value.
             seed_text: Seed textbox content; blank means random.
-            size: Size dropdown value.
+            size: Size dropdown value; the selected model's default when omitted.
             use_llm: State of the "Use LLM enhancement" checkbox.
+            model: Image-model profile key.
 
         Returns:
             ``(gallery_items, details_markdown, status_line)``.
@@ -171,7 +173,8 @@ class DemoApp:
             raise ValueError("Enter a prompt first")
 
         seed = parse_seed(seed_text)
-        width, height = parse_size(size)
+        _, profile = self._settings.image_model(model)
+        width, height = parse_size(size or profile.default_size)
 
         # Serialise runs: the queue already limits concurrency to 1, but a
         # second entry point (or a queue misconfiguration) must not OOM the GPU.
@@ -182,6 +185,7 @@ class DemoApp:
                 seed=seed,
                 width=width,
                 height=height,
+                model=model,
                 use_llm=use_llm,
             )
 
@@ -199,7 +203,7 @@ class DemoApp:
         lines = [
             f"**Your prompt**  \n{result.original_prompt}",
             "",
-            f"**Prompt sent to SDXL**  \n{result.enhanced_prompt}",
+            f"**Prompt sent to image model**  \n{result.enhanced_prompt}",
             "",
             f"**Negative prompt**  \n{first.get('negative_prompt', '')}",
             "",
@@ -209,7 +213,11 @@ class DemoApp:
             f"{first.get('width', '?')}x{first.get('height', '?')} | "
             f"{first.get('steps', '?')} steps | "
             f"guidance {first.get('guidance_scale', '?')} | "
-            f"{first.get('scheduler', '?')}",
+            f"{first.get('scheduler', '?')} | "
+            f"{first.get('weight_dtype', '?')} weights",
+            "",
+            f"**Estimated render time**: {first.get('estimated_render_time', '?')} "
+            "per image (warm pipeline)",
             "",
             "**Files**",
             *[f"- `{image.path.name}` (+ sidecar `{image.metadata_path.name}`)"
@@ -227,23 +235,54 @@ class DemoApp:
             llm_state = f"LLM {result.llm_duration_s:.1f}s"
         return (
             f"{len(result.images)} image(s) in {result.total_duration_s:.1f}s "
-            f"({llm_state}, SDXL {result.sd_duration_s:.1f}s) - "
+            f"({llm_state}, image model {result.sd_duration_s:.1f}s) - "
             f"saved to {self._settings.outputs_dir}"
         )
+
+    def _model_description(self, model: str | None = None) -> str:
+        """Short UI explanation for a selected model profile."""
+        key, profile = self._settings.image_model(model)
+        return (
+            f"**{profile.name}** — {profile.quality}; {profile.parameter_count} "
+            f"parameters; recommended {profile.default_size} at {profile.steps} steps; "
+            f"estimated **{profile.estimate}** per image. "
+            f"Runtime weights: **{self._settings.vram.weight_dtype.upper()}**. "
+            f"Profile: `{key}`."
+        )
+
+    def _model_selection(self, model: str | None = None) -> tuple[str, str]:
+        """Update both the profile description and its recommended size."""
+        _, profile = self._settings.image_model(model)
+        return self._model_description(model), profile.default_size
 
     def build(self) -> "gr.Blocks":
         """Assemble the Blocks UI. Requires ``gradio`` to be installed."""
         import gradio as gr
 
         gen_cfg = self._settings.generation
-        default_size = f"{gen_cfg.width}x{gen_cfg.height}"
-        sizes = list(gen_cfg.allowed_sizes) or [default_size]
+        default_key, default_profile = self._settings.image_model()
+        default_size = default_profile.default_size
+        sizes = self._settings.allowed_sizes or [default_size]
+        model_choices = [
+            (
+                f"{profile.quality}: {profile.name} (~{profile.estimate})",
+                key,
+            )
+            for key, profile in self._settings.model.profiles.items()
+        ]
 
         def on_generate(
-            prompt: str, images: float, seed_text: str, size: str, use_llm: bool
+            prompt: str,
+            images: float,
+            seed_text: str,
+            model: str,
+            size: str,
+            use_llm: bool,
         ) -> tuple[list[tuple[Any, str]], str, str]:
             try:
-                return self.generate(prompt, int(images), seed_text, size, use_llm)
+                return self.generate(
+                    prompt, int(images), seed_text, size, use_llm, model
+                )
             except ValueError as exc:
                 raise gr.Error(str(exc)) from exc
             except FileNotFoundError as exc:
@@ -254,8 +293,8 @@ class DemoApp:
         with gr.Blocks(title="Anime Party Generator") as demo:
             gr.Markdown(
                 "# Anime Party Generator\n"
-                "Local 2.5D anime images: llama3.2 expands your idea on the CPU, "
-                "DreamShaper XL v2 Turbo renders it on the GPU."
+                "Choose an INT8 image-quality tier; llama3.2 optionally expands "
+                "your idea on the CPU."
             )
             with gr.Row():
                 with gr.Column(scale=2):
@@ -277,6 +316,13 @@ class DemoApp:
                             label="Seed", placeholder="blank = random", value=""
                         )
                     with gr.Row():
+                        model = gr.Dropdown(
+                            label="Image model",
+                            choices=model_choices,
+                            value=default_key,
+                        )
+                    model_info = gr.Markdown(self._model_description(default_key))
+                    with gr.Row():
                         size = gr.Dropdown(
                             label="Size",
                             choices=sizes,
@@ -292,9 +338,14 @@ class DemoApp:
                     with gr.Accordion("Prompt details and seeds", open=False):
                         details = gr.Markdown("")
 
-            inputs = [prompt, images, seed, size, use_llm]
+            model.change(
+                self._model_selection,
+                inputs=[model],
+                outputs=[model_info, size],
+            )
+            inputs = [prompt, images, seed, model, size, use_llm]
             outputs = [gallery, details, status]
-            # concurrency_limit=1: one SDXL run at a time on an 8 GB card.
+            # concurrency_limit=1: one image-model run at a time on an 8 GB card.
             generate_button.click(
                 on_generate, inputs=inputs, outputs=outputs, concurrency_limit=1
             )

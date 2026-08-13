@@ -5,15 +5,17 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "anime-party-generator"
 version = "0.1.0"
-description = "Local 2.5D anime image generator: Ollama prompt enhancement + DreamShaper XL v2 Turbo, tuned for 8 GB VRAM"
+description = "Local anime image generator with three INT8 quality tiers and optional Ollama prompt enhancement"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
     "torch>=2.1",
-    "diffusers>=0.27",
-    "transformers>=4.38",
+    "diffusers>=0.39,<1.0",
+    "transformers>=4.47",
     "accelerate>=0.27",
+    # 0.2.7 requires torch>=2.6, while the supported CUDA 12.1 wheel is 2.5.1.
+    "optimum-quanto==0.2.6",
     "safetensors>=0.4",
     "huggingface-hub>=0.23",
     "pydantic-settings>=2.2",

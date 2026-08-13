@@ -92,7 +92,15 @@ def test_cli_generate_help_lists_every_documented_flag(runner: CliRunner) -> Non
     result = runner.invoke(app, ["generate", "--help"])
 
     assert result.exit_code == 0
-    for flag in ("--images", "--seed", "--size", "--steps", "--no-llm", "--warmup"):
+    for flag in (
+        "--images",
+        "--seed",
+        "--size",
+        "--steps",
+        "--model",
+        "--no-llm",
+        "--warmup",
+    ):
         assert flag in plain(result.stdout)
 
 
@@ -136,8 +144,33 @@ def test_cli_warmup_flag_runs_a_throwaway_generation(
     result = runner.invoke(app, ["generate", USER_PROMPT, "--warmup", "--seed", "1"])
 
     assert result.exit_code == 0, result.stdout
-    cli_orchestrator["generator"].warmup.assert_called_once_with()
+    cli_orchestrator["generator"].warmup.assert_called_once_with(model="balanced")
     assert "Warming up" in plain(result.stdout)
+
+
+def test_cli_model_flag_selects_the_requested_profile(
+    runner: CliRunner, cli_orchestrator: dict[str, Any], cli_env: None
+) -> None:
+    result = runner.invoke(
+        app, ["generate", USER_PROMPT, "--model", "best", "--seed", "1"]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    assert cli_orchestrator["generator"].calls[0]["model"] == "best"
+    output = plain(result.stdout)
+    assert "Animagine XL 4.0 Opt" in output
+    assert "int8" in output
+
+
+def test_cli_rejects_an_unknown_model(
+    runner: CliRunner, cli_orchestrator: dict[str, Any], cli_env: None
+) -> None:
+    result = runner.invoke(app, ["generate", USER_PROMPT, "--model", "unknown"])
+
+    assert result.exit_code != 0
+    output = plain(result.stdout + (result.stderr or ""))
+    assert "Unknown image model 'unknown'" in output
+    assert "best, balanced, fast" in output
 
 
 def test_cli_size_flag_is_parsed(
@@ -183,8 +216,12 @@ def test_cli_info_reports_configuration(
     result = runner.invoke(app, ["info"])
 
     assert result.exit_code == 0, result.stdout
-    assert "MISSING" in plain(result.stdout)  # no checkpoint in the temp models dir
-    assert "DOWN" in plain(result.stdout)
+    output = plain(result.stdout)
+    assert "int8 weights, float16 compute (quanto)" in output
+    assert "Animagine XL 4.0 Opt" in output
+    assert "DreamShaper XL v2 Turbo" in output
+    assert "Dreamlike Anime 1.0" in output
+    assert "DOWN" in output
 
 
 @pytest.mark.parametrize(

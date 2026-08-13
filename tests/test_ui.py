@@ -120,6 +120,28 @@ def test_generate_uses_the_same_orchestrator_as_the_cli(
     assert call["images"] == 1
 
 
+def test_model_selection_uses_the_profile_defaults(
+    demo: DemoApp, generator: FakeGenerator
+) -> None:
+    _, details, _ = demo.generate(
+        USER_PROMPT, images=1, seed_text="5", model="fast"
+    )
+
+    call = generator.calls[0]
+    assert call["model"] == "fast"
+    assert (call["width"], call["height"]) == (768, 768)
+    assert "Dreamlike Anime 1.0" in details
+    assert "10-25 seconds" in details
+
+
+def test_model_selection_updates_the_recommended_size(demo: DemoApp) -> None:
+    description, size = demo._model_selection("best")  # noqa: SLF001
+
+    assert "Animagine XL 4.0 Opt" in description
+    assert "INT8" in description
+    assert size == "832x1216"
+
+
 def test_blank_seed_means_random(demo: DemoApp, generator: FakeGenerator) -> None:
     demo.generate(USER_PROMPT, images=1, seed_text="", size="832x1216", use_llm=True)
 

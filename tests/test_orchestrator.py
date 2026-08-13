@@ -46,6 +46,7 @@ class FakeGenerator:
 
     def generate(self, **kwargs: Any) -> list[GenerationResult]:
         self.calls.append(kwargs)
+        model_key, profile = self._settings.image_model(kwargs.get("model"))
         count = kwargs.get("images", 1)
         base_seed = kwargs.get("seed")
         base_seed = 555 if base_seed is None else base_seed
@@ -55,13 +56,21 @@ class FakeGenerator:
                 seed=base_seed + index,
                 settings={
                     "prompt": kwargs["prompt"],
-                    "negative_prompt": self._settings.style.negative_prompt,
-                    "width": kwargs.get("width") or 832,
-                    "height": kwargs.get("height") or 1216,
-                    "steps": kwargs.get("steps") or 6,
-                    "guidance_scale": kwargs.get("guidance") or 2.0,
-                    "scheduler": "DPMSolverSinglestepScheduler",
-                    "model": "DreamShaper XL v2 Turbo",
+                    "negative_prompt": (
+                        profile.negative_prompt
+                        or self._settings.style.negative_prompt
+                    ),
+                    "width": kwargs.get("width") or profile.width,
+                    "height": kwargs.get("height") or profile.height,
+                    "steps": kwargs.get("steps") or profile.steps,
+                    "guidance_scale": (
+                        kwargs.get("guidance") or profile.guidance_scale
+                    ),
+                    "scheduler": profile.scheduler,
+                    "model_key": model_key,
+                    "model": profile.name,
+                    "weight_dtype": self._settings.vram.weight_dtype,
+                    "estimated_render_time": profile.estimate,
                 },
                 duration_s=1.5,
             )
@@ -258,6 +267,16 @@ def test_generation_arguments_are_forwarded(
     assert call["guidance"] == pytest.approx(1.5)
 
 
+def test_model_selection_is_forwarded(
+    orchestrator: Orchestrator, generator: FakeGenerator
+) -> None:
+    result = orchestrator.run(USER_PROMPT, seed=1, model="best")
+
+    assert generator.calls[0]["model"] == "best"
+    assert "masterpiece, high score, great score, absurdres" in result.enhanced_prompt
+    assert result.images[0].metadata["settings"]["model"] == "Animagine XL 4.0 Opt"
+
+
 def test_run_result_exposes_seeds_and_timings(orchestrator: Orchestrator) -> None:
     result = orchestrator.run(USER_PROMPT, seed=1234, images=2)
 
@@ -300,5 +319,5 @@ def test_warmup_and_close_delegate_to_the_generator(
     orchestrator.warmup()
     orchestrator.close()
 
-    generator.warmup.assert_called_once_with()
+    generator.warmup.assert_called_once_with(model=None)
     generator.unload.assert_called_once_with()

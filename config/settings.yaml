@@ -2,7 +2,7 @@
 #
 # Every value can be overridden by an environment variable using the
 # ANIMEGEN_ prefix and "__" as the nesting delimiter, e.g.
-#   ANIMEGEN_GENERATION__STEPS=8
+#   ANIMEGEN_MODEL__DEFAULT=best
 #   ANIMEGEN_OLLAMA__HOST=http://127.0.0.1:11434
 # Environment variables win over this file.
 #
@@ -13,34 +13,90 @@ paths:
   outputs_dir: outputs
 
 model:
-  # Single-file SDXL checkpoint, loaded with StableDiffusionXLPipeline.from_single_file().
-  checkpoint_filename: DreamShaperXL_v2_Turbo.safetensors
-  # Display name recorded in output metadata sidecars.
-  checkpoint_name: DreamShaper XL v2 Turbo
-  # Optional direct download URL (Civitai links may need an API token; see
-  # scripts/download_models.py --url). Left blank on purpose: no hardcoded link.
-  checkpoint_url: null
-  # fp16-safe VAE replacement; the stock SDXL VAE produces black/NaN images in fp16.
+  # Keep balanced as the default so existing commands retain their speed.
+  default: balanced
+  # Stable fp16 VAE used by both SDXL profiles. The denoisers and text-encoder
+  # linear weights are quantized to INT8 at load time; the VAE and computation
+  # stay fp16 because end-to-end integer diffusion is not supported.
   vae_repo: madebyollin/sdxl-vae-fp16-fix
+  profiles:
+    best:
+      name: Animagine XL 4.0 Opt
+      repo_id: cagliostrolab/animagine-xl-4.0
+      architecture: sdxl
+      quality: Best quality
+      parameter_count: 3B
+      estimated_seconds: [60, 120]
+      width: 832
+      height: 1216
+      allowed_sizes: [832x1216, 1024x1024]
+      steps: 28
+      min_steps: 25
+      max_steps: 32
+      guidance_scale: 5.0
+      scheduler: EulerAncestralDiscreteScheduler
+      use_karras_sigmas: false
+      quantize_diffusers: [unet]
+      quantize_transformers: [text_encoder, text_encoder_2]
+      prompt_suffix: ", masterpiece, high score, great score, absurdres"
+      negative_prompt: >-
+        lowres, bad anatomy, bad hands, text, error, missing finger, extra
+        digits, fewer digits, cropped, worst quality, low quality, low score,
+        bad score, average score, signature, watermark, username, blurry
+
+    balanced:
+      name: DreamShaper XL v2 Turbo
+      repo_id: Lykon/dreamshaper-xl-v2-turbo
+      variant: fp16
+      architecture: sdxl
+      quality: Balanced
+      parameter_count: 3B
+      estimated_seconds: [15, 30]
+      width: 832
+      height: 1216
+      allowed_sizes: [832x1216, 1024x1024]
+      steps: 6
+      min_steps: 4
+      max_steps: 8
+      guidance_scale: 2.0
+      scheduler: DPMSolverMultistepScheduler
+      use_karras_sigmas: true
+      quantize_diffusers: [unet]
+      quantize_transformers: [text_encoder, text_encoder_2]
+
+    fast:
+      name: Dreamlike Anime 1.0
+      repo_id: dreamlike-art/dreamlike-anime-1.0
+      architecture: sd
+      quality: Fast / lowest tier
+      parameter_count: 0.9B
+      estimated_seconds: [10, 25]
+      width: 768
+      height: 768
+      allowed_sizes: [768x768, 704x832, 832x704]
+      steps: 20
+      min_steps: 15
+      max_steps: 30
+      guidance_scale: 7.5
+      scheduler: DPMSolverMultistepScheduler
+      use_karras_sigmas: true
+      quantize_diffusers: [unet]
+      quantize_transformers: [text_encoder]
+      prompt_suffix: ", photo anime, masterpiece, high quality, absurdres"
+      negative_prompt: >-
+        simple background, duplicate, retro style, low quality, lowest quality,
+        bad anatomy, bad proportions, extra digits, lowres, username, artist
+        name, error, watermark, signature, text, jpeg artifacts, blurry
 
 generation:
-  # Turbo-class defaults: few steps, low guidance.
-  scheduler: DPMSolverSinglestepScheduler
-  use_karras_sigmas: true
-  steps: 6
-  min_steps: 4
-  max_steps: 8
-  guidance_scale: 2.0
-  width: 832
-  height: 1216
-  # Sizes offered by the CLI --size flag and the UI dropdown.
-  allowed_sizes:
-    - 832x1216
-    - 1024x1024
   images_per_run: 1
   max_images_per_run: 4
 
 vram:
+  # Quanto stores supported denoiser/text-encoder linear weights as INT8.
+  weight_dtype: int8
+  quantization_backend: quanto
+  # Remaining layers and arithmetic use fp16 on CUDA.
   # 8 GB RTX 3070 Laptop strategy — do not switch to a plain .to("cuda").
   dtype: float16
   enable_model_cpu_offload: true
@@ -53,7 +109,7 @@ ollama:
   # CPU inference can take 10-20 seconds while the model is loading.
   timeout: 30.0
   temperature: 0.7
-  # 0 => llama3.2 stays on the CPU and never competes with SDXL for VRAM.
+  # 0 => llama3.2 stays on the CPU and never competes for image-model VRAM.
   num_gpu: 0
   system_prompt: >-
     You are a Stable Diffusion XL prompt engineer. Expand the user's idea into

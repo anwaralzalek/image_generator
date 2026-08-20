@@ -8,52 +8,40 @@
 #
 # Model weights are not baked in; the Compose hf-cache volume stores them.
 
-ARG PYTHON_VERSION=3.10
-FROM python:${PYTHON_VERSION}-slim-bookworm AS runtime
+FROM python:3.10-slim-bookworm
 
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu126
 
 ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_NO_CACHE_DIR=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     NVIDIA_VISIBLE_DEVICES=all \
     NVIDIA_DRIVER_CAPABILITIES=compute,utility
 
-# curl serves the healthcheck; libgomp1 is required by torch's CPU kernels.
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl libgomp1 \
-    && rm -rf /var/lib/apt/lists/*
-
 RUN useradd --create-home --uid 1000 appuser
 
 WORKDIR /app
 
-# Keep dependency installation above the full source copy so ordinary code
-# edits do not invalidate this expensive layer.
+# Install the package from the minimum files needed at runtime.
 COPY pyproject.toml README.md ./
 COPY src ./src
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install torch --index-url "${TORCH_INDEX_URL}" \
-    && pip install ".[dev]"
+RUN pip install --upgrade pip \
+    && pip install torch==2.13.0 --index-url "${TORCH_INDEX_URL}" \
+    && pip install ".[ui]"
 
-COPY --chown=appuser:appuser . /app
-COPY --chmod=755 docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN mkdir -p /outputs /hf-cache \
+    && chown appuser:appuser /outputs /hf-cache
 
-RUN mkdir -p /models /outputs /hf-cache \
-    && chown appuser:appuser /app /models /outputs /hf-cache
-
-ENV ANIMEGEN_CONFIG_FILE=/app/config/settings.yaml \
-    ANIMEGEN_PATHS__MODELS_DIR=/models \
-    ANIMEGEN_PATHS__OUTPUTS_DIR=/outputs \
+ENV ANIMEGEN_PATHS__OUTPUTS_DIR=/outputs \
     HF_HOME=/hf-cache \
-    GRADIO_ANALYTICS_ENABLED=False \
-    GRADIO_SERVER_NAME=0.0.0.0
+    GRADIO_ANALYTICS_ENABLED=False
 
 USER appuser
 EXPOSE 7860
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
-    CMD curl -fsS http://localhost:7860/ || exit 1
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:7860', timeout=2)"]
 
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["animegen"]
 CMD ["ui", "--host", "0.0.0.0"]

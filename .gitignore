@@ -20,9 +20,8 @@ env/
 .idea/
 .claude/
 
-# Model weights (downloaded via scripts/download_models.py)
-models/*
-!models/.gitkeep
+# Model weights
+models/
 *.safetensors
 *.ckpt
 *.bin

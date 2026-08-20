@@ -106,13 +106,17 @@ def test_ui_settings_are_wired_through_compose(compose: dict[str, Any]) -> None:
     assert service["ports"] == ["127.0.0.1:${HOST_PORT:-7860}:7860"]
 
 
-def test_dockerfile_installs_exact_cuda_torch_and_runtime_extras(
+def test_dockerfile_uses_exact_pytorch_cuda_runtime_and_installs_app(
     dockerfile: str,
 ) -> None:
-    assert "https://download.pytorch.org/whl/cu126" in dockerfile
-    assert "pip install --upgrade pip" in dockerfile
-    assert 'pip install torch==2.13.0 --index-url "${TORCH_INDEX_URL}"' in dockerfile
-    assert 'pip install ".[ui]"' in dockerfile
+    assert dockerfile.count(
+        "FROM pytorch/pytorch:2.13.0-cuda12.6-cudnn9-runtime"
+    ) == 1
+    assert "FROM python:" not in dockerfile
+    assert "TORCH_INDEX_URL" not in dockerfile
+    assert "pip install torch" not in dockerfile
+    assert "pip install --upgrade pip" not in dockerfile
+    assert 'python -m pip install --break-system-packages ".[ui]"' in dockerfile
     assert "COPY pyproject.toml README.md ./" in dockerfile
     assert "--mount=type=cache" not in dockerfile
     assert "PIP_NO_CACHE_DIR=1" in dockerfile
@@ -120,11 +124,13 @@ def test_dockerfile_installs_exact_cuda_torch_and_runtime_extras(
     assert "COPY config" not in dockerfile
 
 
-def test_dockerfile_uses_system_python_as_a_nonroot_user(dockerfile: str) -> None:
+def test_dockerfile_reuses_the_base_image_nonroot_user(dockerfile: str) -> None:
     for fragment in ("VIRTUAL_ENV", "python -m venv", "/opt/venv"):
         assert fragment not in dockerfile
 
-    assert "USER appuser" in dockerfile
+    assert "useradd" not in dockerfile
+    assert "chown 1000:1000 /outputs /hf-cache" in dockerfile
+    assert "USER 1000:1000" in dockerfile
 
 
 def test_dockerfile_uses_python_healthcheck_without_curl(dockerfile: str) -> None:
@@ -169,5 +175,5 @@ def test_pyyaml_is_a_test_dependency_not_a_runtime_dependency() -> None:
 def test_env_example_documents_compose_variables() -> None:
     text = (PROJECT_ROOT / ".env.example").read_text(encoding="utf-8")
 
-    for variable in ("HOST_PORT", "ANIMEGEN_OLLAMA__HOST"):
+    for variable in ("HOST_PORT", "ANIMEGEN_OLLAMA__HOST", "HF_TOKEN"):
         assert variable in text

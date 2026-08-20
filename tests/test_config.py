@@ -68,15 +68,20 @@ def test_defaults_match_the_runtime_contract() -> None:
 
 def test_prompt_constants_are_stable() -> None:
     assert STYLE_SUFFIX == (
-        ", semi-realistic 2.5D anime style, 3D-shaded characters, volumetric lighting, "
+        ", realistic 3D anime style, 3D-shaded characters, volumetric lighting, "
         "glossy rendering, detailed faces, cinematic composition, high detail"
     )
     assert NEGATIVE_PROMPT == (
         "bad anatomy, deformed hands, extra fingers, extra limbs, mutated, lowres, "
         "blurry, watermark, text, jpeg artifacts, flat 2D shading"
     )
-    assert "Stable Diffusion prompt engineer" in SYSTEM_PROMPT
-    assert "Output ONLY the prompt" in SYSTEM_PROMPT
+    assert "Stable Diffusion prompt engineer specializing in 3D Anime" in (
+        SYSTEM_PROMPT
+    )
+    assert "Always include the exact phrase '3D anime style'" in SYSTEM_PROMPT
+    assert "cel-shaded color blended with soft 3D forms and materials" in SYSTEM_PROMPT
+    assert "never omit or replace the required style" in SYSTEM_PROMPT
+    assert "Output ONLY the final prompt" in SYSTEM_PROMPT
 
 
 def test_environment_overrides_supported_runtime_values(
